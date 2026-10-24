@@ -7,7 +7,7 @@ PostgreSQL 기반의 일별 시세 수집, RandomForest 126일 시계열 주가 
 
 ## 1. 프로젝트 아키텍처
 
-- **Database**: PostgreSQL 18 (Docker Desktop, Port 5432)
+- **Database**: PostgreSQL 17 (Docker Desktop, Port 5432)
 - **DB Name**: `stock_db`
 - **Tables**:
   - `daily_stock_prices`: 일별 OHLCV 시세 원천 테이블 (PK: `ticker, target_date`)
@@ -21,7 +21,7 @@ PostgreSQL 기반의 일별 시세 수집, RandomForest 126일 시계열 주가 
 
 ## 2. 빠른 시작 (Docker Compose)
 
-팀원 누구나 `docker-compose.yml`을 통해 로컬 개발용 PostgreSQL 18 환경을 원클릭으로 구동할 수 있습니다.
+팀원 누구나 `docker-compose.yml`을 통해 로컬 개발용 PostgreSQL 17 환경을 원클릭으로 구동할 수 있습니다.
 
 ### 컨테이너 실행 (백그라운드)
 ```bash
