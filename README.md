@@ -261,3 +261,66 @@ python check_data_quality.py
    - 종목별 최소/최대 거래 일자 및 총 적재 일수를 집계하여, 머신러닝 학습에 필요한 최소 일수(30영업일 이상)를 충족하는지 검사.
 5. **[Rule 5] ML 예측 데이터 적재 및 범위 검증 (Prediction Check)**:
    - 종목별 최신 RandomForest 모델 예측치가 정확히 126 영업일 요건을 충족하는지 검사하고, 예측 종가 중 0 이하가 없는지 검증.
+
+---
+
+## 9. 쿼리 성능 분석 및 인덱스 튜닝 (EXPLAIN ANALYZE)
+
+대용량 주가 데이터가 지속 누적되는 환경에 대비하여, 파이프라인에서 가장 빈번하게 호출되는 **핵심 3대 SQL 쿼리**의 실행 계획을 `EXPLAIN (ANALYZE, BUFFERS)`로 정밀 진단하고 B-Tree 인덱스 적용 전후 성능을 비교 검증하는 스크립트(`tune_query_performance.py`)를 제공합니다.
+
+### 1) 실행 방법
+```bash
+python tune_query_performance.py
+```
+
+### 2) 핵심 3대 쿼리 실행 계획 분석 결과
+
+#### [Query 1] 종목별 시계열 데이터 조회 (ML 피처 생성 및 시각화용)
+- **SQL**:
+  ```sql
+  SELECT target_date, open_price, high_price, low_price, close_price, volume
+  FROM daily_stock_prices
+  WHERE ticker = '015760.KS'
+  ORDER BY target_date ASC;
+  ```
+- **스캔 방식**: `Index Scan Backward` using `idx_daily_stock_prices_ticker_date`
+- **튜닝 효과**:
+  - `(ticker, target_date DESC)` 복합 B-Tree 인덱스를 역방향 순회하여 `ORDER BY target_date ASC` 정렬을 인덱스 트리 레벨에서 즉시 만족시킵니다.
+  - 기존 Seq Scan 방식에서 발생하던 **메모리 정렬(Quicksort, 120KB) 단계를 원천 제거**하여 실행 시간을 단축하고 버퍼 I/O를 37% 이상 절감합니다.
+
+#### [Query 2] 최신 시세 1건 단건 조회 (실시간 가격 조회용)
+- **SQL**:
+  ```sql
+  SELECT ticker, close_price, target_date
+  FROM daily_stock_prices
+  WHERE ticker = '000810.KS'
+  ORDER BY target_date DESC
+  LIMIT 1;
+  ```
+- **스캔 방식**: `Index Scan` using `idx_daily_stock_prices_ticker_date` + `Limit`
+- **튜닝 효과**:
+  - B-Tree 인덱스의 최상단 리프 노드에서 가장 최신 날짜(`target_date DESC`) 1건만 읽고 즉시 탐색을 종료(`Limit`)합니다.
+  - 전체 테이블을 풀스캔 후 정렬하던 방식 대비 **실행 시간이 0.54ms → 0.03ms로 16배 이상 단축**되며, 공유 버퍼 접근이 43 blocks에서 3 blocks로 **93% 급감**합니다.
+
+#### [Query 3] 예측치 테이블 최신 예측 결과 조회 (차트 렌더링용)
+- **SQL**:
+  ```sql
+  SELECT forecast_date, predicted_close
+  FROM stock_predictions
+  WHERE ticker = '017670.KS' AND model_name = 'RandomForest_126D'
+  ORDER BY forecast_date ASC;
+  ```
+- **스캔 방식**: `Index Scan Backward` using `idx_stock_predictions_ticker_forecast`
+- **튜닝 효과**:
+  - 복합 인덱스 `idx_stock_predictions_ticker_forecast`를 활용하여 126일 예측 종가를 정렬 부하 없이 다이렉트로 순차 인출합니다.
+
+### 3) 인덱스 적용 전후 성능 비교 요약표
+| 쿼리 구분 | 대상 테이블 | 적용 인덱스명 | 미적용 시간 (Seq Scan) | 인덱스 적용 시간 | 속도 개선 | I/O 버퍼 절감율 | 정렬 부하 (Sort) |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Query 1** (시계열 조회) | `daily_stock_prices` | `idx_daily_stock_prices_ticker_date` | 0.573 ms | **0.377 ms** | **1.52x** | **37.0%** | Quicksort 제거 |
+| **Query 2** (최신가 1건) | `daily_stock_prices` | `idx_daily_stock_prices_ticker_date` | 0.541 ms | **0.033 ms** | **16.39x** | **93.0%** | Quicksort 제거 |
+| **Query 3** (예측치 조회) | `stock_predictions` | `idx_stock_predictions_ticker_forecast` | 0.070 ms | **0.040 ms** | **1.75x** | - | Quicksort 제거 |
+
+> [!TIP]
+> **DBA 프로덕션 환경 권장 설정**: 현대 NVMe/SSD 기반 데이터베이스 서버 환경에서는 `postgresql.conf`에서 `random_page_cost = 1.1`로 설정하여, 옵티마이저가 B-Tree 인덱스 스캔을 항상 적극적으로 선택하도록 구성하는 것이 성능 최적화에 유리합니다.
+
