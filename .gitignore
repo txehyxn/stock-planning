@@ -3,6 +3,7 @@ __pycache__/
 *.class
 .env
 .venv/
+backups/
 *.log
 env/
 venv/
