@@ -324,3 +324,62 @@ python tune_query_performance.py
 > [!TIP]
 > **DBA 프로덕션 환경 권장 설정**: 현대 NVMe/SSD 기반 데이터베이스 서버 환경에서는 `postgresql.conf`에서 `random_page_cost = 1.1`로 설정하여, 옵티마이저가 B-Tree 인덱스 스캔을 항상 적극적으로 선택하도록 구성하는 것이 성능 최적화에 유리합니다.
 
+---
+
+## 10. REST API 서버 연동 가이드 (`api_server.py`)
+
+프론트엔드 대시보드, 모바일 앱, 외부 분석 서비스에서 `stock_db`에 적재된 주가 데이터와 머신러닝 예측치를 실시간으로 조회할 수 있도록 FastAPI 기반 경량 비동기 REST API 서버를 제공합니다.
+
+### 1) 주요 아키텍처 및 특징
+- **커넥션 풀링**: `psycopg2.pool.SimpleConnectionPool` (min 1, max 10)을 활용하여 다중 사용자 동시 요청 시에도 DB 부하를 제어하고 연결 누수를 원천 차단합니다.
+- **CORS 지원**: `CORSMiddleware` (`allow_origins=["*"]`)가 적용되어 React, Vue, Next.js 등 다양한 웹 프론트엔드 환경에서 교차 출처 리소스 공유가 즉시 가능합니다.
+- **자동 대화형 API 문서**: OpenAPI/Swagger 및 ReDoc이 기본 탑재되어 브라우저에서 직접 API를 테스트할 수 있습니다.
+
+### 2) 서버 실행 방법
+
+- **기본 실행 (추천)**:
+  ```bash
+  python api_server.py
+  ```
+- **Uvicorn 직접 구동 (워커 지정 등)**:
+  ```bash
+  uvicorn api_server:app --host 0.0.0.0 --port 8000
+  ```
+
+### 3) 대화형 API 문서 (Swagger / ReDoc)
+- **Swagger UI (직접 호출 테스트)**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **ReDoc (상세 명세 문서)**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+
+### 4) REST API 엔드포인트 명세
+| HTTP 메서드 | 엔드포인트 경로 | 파라미터 | 반환 내용 및 설명 |
+| :--- | :--- | :--- | :--- |
+| **GET** | `/health` | 없음 | 서버 및 PostgreSQL 커넥션 풀 헬스체크 상태 반환 |
+| **GET** | `/api/stocks/summary` | 없음 | `v_latest_stock_summary` 뷰 기반 전 종목 최신 시세, 등락액/등락률, 거래량 |
+| **GET** | `/api/stocks/{ticker}/prices` | `days` (기본 120일) | 특정 종목의 최근 N 영업일 OHLCV 과거 시세 목록 (날짜 오름차순) |
+| **GET** | `/api/stocks/{ticker}/predictions` | `model_name` (기본 'RandomForest_126D') | 특정 종목의 향후 126 영업일 종가 예측치 목록 (날짜 오름차순) |
+| **GET** | `/api/models/metrics` | 없음 | `model_evaluation_metrics` 테이블 기반 종목별 최신 모델 평가 수치 (RMSE, MAE, R², MAPE) |
+
+### 5) cURL 호출 예시
+
+- **헬스체크**:
+  ```bash
+  curl http://localhost:8000/health
+  ```
+- **종목별 최신 시세 요약**:
+  ```bash
+  curl http://localhost:8000/api/stocks/summary
+  ```
+- **한국전력 최근 30일 시세 조회**:
+  ```bash
+  curl "http://localhost:8000/api/stocks/015760.KS/prices?days=30"
+  ```
+- **SK텔레콤 126일 머신러닝 예측치 조회**:
+  ```bash
+  curl "http://localhost:8000/api/stocks/017670.KS/predictions?model_name=RandomForest_126D"
+  ```
+- **모델 평가 지표 조회**:
+  ```bash
+  curl http://localhost:8000/api/models/metrics
+  ```
+
+
