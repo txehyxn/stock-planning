@@ -19,7 +19,31 @@ PostgreSQL 기반의 일별 시세 수집, RandomForest 126일 시계열 주가 
 
 ---
 
-## 2. 데이터베이스 스키마
+## 2. 빠른 시작 (Docker Compose)
+
+팀원 누구나 `docker-compose.yml`을 통해 로컬 개발용 PostgreSQL 18 환경을 원클릭으로 구동할 수 있습니다.
+
+### 컨테이너 실행 (백그라운드)
+```bash
+docker compose up -d
+```
+
+### 컨테이너 상태 확인
+```bash
+docker compose ps
+```
+
+### 컨테이너 중지
+```bash
+docker compose down
+```
+
+> [!NOTE]
+> 데이터는 명명된 볼륨(`stock_project_pgdata`)에 영구 보존되므로 컨테이너를 내렸다 다시 올려도 수집/예측 데이터가 유지됩니다.
+
+---
+
+## 3. 데이터베이스 스키마
 
 ```sql
 -- 일별 시세 원천 테이블
@@ -49,7 +73,7 @@ CREATE TABLE IF NOT EXISTS stock_predictions (
 
 ---
 
-## 3. 파이프라인 실행 순서
+## 4. 파이프라인 실행 순서
 
 ### Step 1. 시세 데이터 수집 및 DB 적재
 ```bash

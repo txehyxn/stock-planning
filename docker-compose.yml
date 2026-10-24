@@ -1,0 +1,17 @@
+services:
+  stock_db:
+    image: postgres:18
+    container_name: stock_db
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+      POSTGRES_DB: stock_db
+      TZ: Asia/Seoul
+    volumes:
+      - stock_project_pgdata:/var/lib/postgresql/data
+
+volumes:
+  stock_project_pgdata:
