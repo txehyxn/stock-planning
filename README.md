@@ -162,3 +162,28 @@ Docker 볼륨 삭제, 테스트 데이터 롤백, 데이터 마이그레이션 �
   .\restore.bat backups\stock_db_backup_20261025_013635.sql
   ```
 - **정합성 검증**: 복원 직후 `daily_stock_prices`와 `stock_predictions` 테이블의 건수를 출력하여 누락 없이 데이터가 복원되었는지 확인합니다.
+
+---
+
+## 7. 데이터 품질 및 무결성 검증 (`check_data_quality.py`)
+
+데이터베이스에 적재된 일별 시세 원천 데이터(`daily_stock_prices`)와 머신러닝 예측 데이터(`stock_predictions`)의 신뢰성을 전수 검사하는 데이터 품질 보증(Data Quality Assurance) 스크립트입니다.
+
+### 실행 방법
+```bash
+python check_data_quality.py
+```
+- 모든 검증 규칙 통과 시 `[SUCCESS]` 출력 및 정상 종료 코드 `0`을 반환합니다.
+- 1개라도 결함 발생 시 `[FAIL]` 플래그 및 결함 레코드 상세를 출력하고 종료 코드 `1`을 반환합니다 (CI/CD 자동화 파이프라인 연동 가능).
+
+### 5대 데이터 품질 검증 규칙 (Validation Rules)
+1. **[Rule 1] OHLC 가격 논리성 검증 (Price Logic Check)**:
+   - 시가와 종가가 당일 저가와 고가 사이에 위치하는지 검사 (`Low <= Open <= High` AND `Low <= Close <= High`).
+2. **[Rule 2] 이상치 및 유효성 검증 (Value Validity Check)**:
+   - 시가/고가/저가/종가가 0 이하(`<= 0`)이거나 거래량이 음수(`< 0`)인 비정상 수치가 없는지 검사.
+3. **[Rule 3] 필수 컬럼 NULL 결측치 검증 (Missing Value Check)**:
+   - 원천 시세 테이블 및 예측치 테이블의 필수 컬럼 중 NULL 결측치가 존재하는지 검사.
+4. **[Rule 4] 종목별 시세 수집 범위 및 일수 점검 (Coverage Check)**:
+   - 종목별 최소/최대 거래 일자 및 총 적재 일수를 집계하여, 머신러닝 학습에 필요한 최소 일수(30영업일 이상)를 충족하는지 검사.
+5. **[Rule 5] ML 예측 데이터 적재 및 범위 검증 (Prediction Check)**:
+   - 종목별 최신 RandomForest 모델 예측치가 정확히 126 영업일 요건을 충족하는지 검사하고, 예측 종가 중 0 이하가 없는지 검증.
