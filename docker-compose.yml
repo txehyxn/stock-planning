@@ -12,6 +12,7 @@ services:
       TZ: Asia/Seoul
     volumes:
       - stock_project_pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
 volumes:
   stock_project_pgdata:

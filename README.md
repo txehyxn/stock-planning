@@ -21,7 +21,8 @@ PostgreSQL 기반의 일별 시세 수집, RandomForest 126일 시계열 주가 
 
 ## 2. 빠른 시작 (Docker Compose)
 
-팀원 누구나 `docker-compose.yml`을 통해 로컬 개발용 PostgreSQL 17 환경을 원클릭으로 구동할 수 있습니다.
+팀원 누구나 `docker-compose.yml`을 통해 로컬 개발용 PostgreSQL 17 환경을 원클릭으로 구동할 수 있습니다.  
+컨테이너 최초 구동 시 프로젝트 루트의 `init.sql`이 마운트되어 필요한 테이블(`daily_stock_prices`, `stock_predictions`) 및 인덱스가 **자동으로 생성(DDL 자동 실행)**되므로 별도의 DB 초기화 작업이 필요 없습니다.
 
 ### 컨테이너 실행 (백그라운드)
 ```bash
@@ -39,11 +40,14 @@ docker compose down
 ```
 
 > [!NOTE]
-> 데이터는 명명된 볼륨(`stock_project_pgdata`)에 영구 보존되므로 컨테이너를 내렸다 다시 올려도 수집/예측 데이터가 유지됩니다.
+> - **자동 스키마 초기화**: `init.sql`이 컨테이너의 `/docker-entrypoint-initdb.d/init.sql:ro`로 마운트되어 최초 기동 시 테이블 및 조회 최적화 인덱스가 자동 구성됩니다.
+> - **데이터 영구 보존**: 데이터는 명명된 볼륨(`stock_project_pgdata`)에 영구 보존되므로 컨테이너를 내렸다 다시 올려도 수집/예측 데이터가 유지됩니다.
 
 ---
 
 ## 3. 데이터베이스 스키마
+
+`init.sql`에 정의된 DDL 스키마 명세입니다:
 
 ```sql
 -- 일별 시세 원천 테이블
@@ -59,6 +63,10 @@ CREATE TABLE IF NOT EXISTS daily_stock_prices (
     PRIMARY KEY (ticker, target_date)
 );
 
+-- 종목별 시계열 조회 최적화 인덱스
+CREATE INDEX IF NOT EXISTS idx_daily_stock_prices_ticker_date 
+ON daily_stock_prices (ticker, target_date DESC);
+
 -- 머신러닝 예측 결과 테이블
 CREATE TABLE IF NOT EXISTS stock_predictions (
     prediction_id BIGSERIAL PRIMARY KEY,
@@ -69,6 +77,10 @@ CREATE TABLE IF NOT EXISTS stock_predictions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_stock_model_forecast UNIQUE (ticker, model_name, forecast_date)
 );
+
+-- 종목 및 예측 일자 기준 빠른 조회를 위한 복합 인덱스
+CREATE INDEX IF NOT EXISTS idx_stock_predictions_ticker_forecast 
+ON stock_predictions (ticker, forecast_date DESC);
 ```
 
 ---
