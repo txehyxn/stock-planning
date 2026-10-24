@@ -47,3 +47,102 @@ CREATE TABLE IF NOT EXISTS stock_predictions (
 -- 종목 및 예측 일자 기준 빠른 조회를 위한 복합 인덱스
 CREATE INDEX IF NOT EXISTS idx_stock_predictions_ticker_forecast 
 ON stock_predictions (ticker, forecast_date DESC);
+
+
+-- ------------------------------------------------------------------------------
+-- 3. 종목별 최신 시세 요약 뷰 (v_latest_stock_summary)
+--    종목별 가장 최근 거래일의 OHLCV와 전일 종가(LAG), 당일 등락액 및 등락률을 실시간 집계합니다.
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_latest_stock_summary AS
+WITH ranked_prices AS (
+    SELECT 
+        ticker,
+        target_date,
+        open_price,
+        high_price,
+        low_price,
+        close_price,
+        volume,
+        -- 이전 거래일 종가 추출 (전일비 계산용)
+        LAG(close_price) OVER (PARTITION BY ticker ORDER BY target_date ASC) AS prev_close,
+        -- 최신 거래일 추출용 행 번호 부여
+        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY target_date DESC) AS rn,
+        -- 종목별 전체 누적 거래일수 및 최초 수집일 집계
+        COUNT(*) OVER (PARTITION BY ticker) AS total_days,
+        MIN(target_date) OVER (PARTITION BY ticker) AS first_date
+    FROM daily_stock_prices
+)
+SELECT 
+    ticker,
+    first_date,
+    target_date AS latest_date,
+    total_days,
+    open_price,
+    high_price,
+    low_price,
+    close_price AS latest_close,
+    prev_close,
+    ROUND(close_price - prev_close, 2) AS change_amount,
+    ROUND(((close_price - prev_close) / NULLIF(prev_close, 0)) * 100, 2) AS change_rate_pct,
+    volume
+FROM ranked_prices
+WHERE rn = 1;
+
+
+-- ------------------------------------------------------------------------------
+-- 4. 종목별 ML 예측 및 기대 수익률 요약 뷰 (v_prediction_overview)
+--    최근 실제 종가와 126일 후 최종 예측가를 매핑하여 예상 기대 수익률 및 최고/최저가를 요약합니다.
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_prediction_overview AS
+WITH latest_actual AS (
+    -- 종목별 가장 최근 실제 종가 및 기준 일자
+    SELECT ticker, close_price AS current_close, target_date AS actual_base_date
+    FROM (
+        SELECT ticker, close_price, target_date,
+               ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY target_date DESC) AS rn
+        FROM daily_stock_prices
+    ) t
+    WHERE rn = 1
+),
+pred_stats AS (
+    -- 향후 126 영업일 예측 기간, 최저가, 최고가 집계
+    SELECT 
+        ticker,
+        model_name,
+        MIN(forecast_date) AS forecast_start_date,
+        MAX(forecast_date) AS forecast_end_date,
+        COUNT(*) AS total_forecast_days,
+        MIN(predicted_close) AS min_predicted_close,
+        MAX(predicted_close) AS max_predicted_close
+    FROM stock_predictions
+    WHERE model_name = 'RandomForest_126D'
+    GROUP BY ticker, model_name
+),
+final_pred AS (
+    -- 126일 후(가장 먼 미래 예측 일자)의 최종 예측 종가 추출
+    SELECT ticker, predicted_close AS target_forecast_close
+    FROM (
+        SELECT ticker, predicted_close,
+               ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY forecast_date DESC) AS rn
+        FROM stock_predictions
+        WHERE model_name = 'RandomForest_126D'
+    ) p
+    WHERE rn = 1
+)
+SELECT 
+    p.ticker,
+    p.model_name,
+    a.actual_base_date,
+    a.current_close,
+    p.forecast_start_date,
+    p.forecast_end_date,
+    p.total_forecast_days,
+    f.target_forecast_close,
+    -- 현재가 대비 126일 후 예상 기대 수익률 (%)
+    ROUND(((f.target_forecast_close - a.current_close) / NULLIF(a.current_close, 0)) * 100, 2) AS expected_return_pct,
+    p.min_predicted_close,
+    p.max_predicted_close
+FROM pred_stats p
+JOIN latest_actual a ON p.ticker = a.ticker
+JOIN final_pred f ON p.ticker = f.ticker;
+

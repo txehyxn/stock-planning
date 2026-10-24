@@ -83,6 +83,28 @@ CREATE INDEX IF NOT EXISTS idx_stock_predictions_ticker_forecast
 ON stock_predictions (ticker, forecast_date DESC);
 ```
 
+### 실시간 분석 및 요약 뷰 (Views)
+
+DBeaver 또는 백엔드 애플리케이션에서 복잡한 집계/윈도우 쿼리 없이 단일 SELECT로 주요 비즈니스 지표를 즉시 조회할 수 있는 뷰 2종을 제공합니다:
+
+#### 1) `v_latest_stock_summary` (종목별 최신 시세 요약 뷰)
+- **설명**: 종목별 가장 최근 거래일의 OHLCV와 `LAG()` 윈도우 함수 기반 전일 종가, 당일 등락액(`change_amount`) 및 등락률(`change_rate_pct`, %), 전체 누적 수집 일수를 실시간 집계합니다.
+- **조회 예시**:
+  ```sql
+  SELECT ticker, latest_date, latest_close, prev_close, change_amount, change_rate_pct, total_days 
+  FROM v_latest_stock_summary 
+  ORDER BY ticker;
+  ```
+
+#### 2) `v_prediction_overview` (종목별 ML 예측 및 기대 수익률 요약 뷰)
+- **설명**: 최근 실제 종가(`current_close`)와 향후 126일 후 최종 예측 종가(`target_forecast_close`)를 매핑하여 **예상 기대 수익률(`expected_return_pct`, %)**, 예측 기간, 126 영업일 중 최저가 및 최고가를 실시간 집계합니다.
+- **조회 예시**:
+  ```sql
+  SELECT ticker, actual_base_date, current_close, target_forecast_close, expected_return_pct, min_predicted_close, max_predicted_close 
+  FROM v_prediction_overview 
+  ORDER BY expected_return_pct DESC;
+  ```
+
 ---
 
 ## 4. 파이프라인 실행 순서
