@@ -50,7 +50,30 @@ ON stock_predictions (ticker, forecast_date DESC);
 
 
 -- ------------------------------------------------------------------------------
--- 3. 종목별 최신 시세 요약 뷰 (v_latest_stock_summary)
+-- 3. 머신러닝 모델 성능 평가 지표 테이블 (model_evaluation_metrics)
+--    모델 재학습 시 시계열 검증(Train/Test Split)을 통해 산출된 성능 평가 지표(RMSE, MAE, R2, MAPE)를 추적/적재합니다.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_evaluation_metrics (
+    metric_id        BIGSERIAL      PRIMARY KEY,               -- 평가지표 레코드 고유 식별자 (PK, 자동 증가)
+    ticker           VARCHAR(20)    NOT NULL,                  -- 종목 코드 (예: '015760.KS')
+    model_name       VARCHAR(50)    NOT NULL,                  -- 머신러닝 모델명 (예: 'RandomForest_126D')
+    train_start_date DATE           NOT NULL,                  -- 학습 데이터 시작 일자
+    train_end_date   DATE           NOT NULL,                  -- 검증/학습 데이터 종료 일자
+    sample_count     INT            NOT NULL,                  -- 학습 및 검증에 사용된 총 샘플 수
+    rmse             NUMERIC(12, 2) NOT NULL,                  -- 평균 제곱근 오차 (Root Mean Squared Error)
+    mae              NUMERIC(12, 2) NOT NULL,                  -- 평균 절대 오차 (Mean Absolute Error)
+    r2_score         NUMERIC(6, 4)  NOT NULL,                  -- 결정계수 (R-squared)
+    mape_pct         NUMERIC(6, 2)  NOT NULL,                  -- 평균 절대 백분율 오차율 (MAPE, %)
+    created_at       TIMESTAMP      DEFAULT CURRENT_TIMESTAMP  -- 평가지표 산출 및 적재 일시
+);
+
+-- 종목 및 모델별 최신 평가지표 이력 조회를 위한 복합 인덱스
+CREATE INDEX IF NOT EXISTS idx_model_metrics_ticker_model 
+ON model_evaluation_metrics (ticker, model_name, created_at DESC);
+
+
+-- ------------------------------------------------------------------------------
+-- 4. 종목별 최신 시세 요약 뷰 (v_latest_stock_summary)
 --    종목별 가장 최근 거래일의 OHLCV와 전일 종가(LAG), 당일 등락액 및 등락률을 실시간 집계합니다.
 -- ------------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_latest_stock_summary AS
@@ -90,7 +113,7 @@ WHERE rn = 1;
 
 
 -- ------------------------------------------------------------------------------
--- 4. 종목별 ML 예측 및 기대 수익률 요약 뷰 (v_prediction_overview)
+-- 5. 종목별 ML 예측 및 기대 수익률 요약 뷰 (v_prediction_overview)
 --    최근 실제 종가와 126일 후 최종 예측가를 매핑하여 예상 기대 수익률 및 최고/최저가를 요약합니다.
 -- ------------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_prediction_overview AS

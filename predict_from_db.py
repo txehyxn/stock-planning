@@ -3,6 +3,7 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # ==========================================
 # 1. [DB 연동] 환경 설정 및 PostgreSQL 연결 정보
@@ -30,9 +31,10 @@ if not tickers:
   exit()
 
 print("======================================")
-print("차트(OHLCV) 기반 주가 예측 시작 [DB 연동 버전]")
+print("차트(OHLCV) 기반 주가 예측 및 모델 평가 시작 [DB 연동 버전]")
 print(f"데이터베이스  : {DB_URL}")
 print("학습 데이터    : daily_stock_prices 테이블")
+print("평가 적재 대상: model_evaluation_metrics 테이블 (RMSE, MAE, R2, MAPE)")
 print("예측 적재 대상: stock_predictions 테이블 (model_name='RandomForest_126D')")
 print(f"대상 종목 수  : {len(tickers)}개 ({', '.join(tickers)})")
 print("======================================\n")
@@ -137,6 +139,70 @@ for ticker in tickers:
 
   X = df_model[features]
   y = df_model["Return"]  # 타겟: 일간 수익률
+
+  # ------------------------------------------
+  # [신규 추가] 모델 신뢰도 검증 및 평가 지표 산출 (Train/Test Split 80:20 시계열 분할)
+  # ------------------------------------------
+  # 미래 예측 전, 과거 시계열 데이터의 마지막 20%를 테스트셋으로 분할하여
+  # 모델 평가 지표(RMSE, MAE, R2, MAPE)를 산출하고 DB(model_evaluation_metrics)에 적재합니다.
+  n_samples = len(df_model)
+  split_idx = int(n_samples * 0.8)
+  train_df = df_model.iloc[:split_idx]
+  test_df = df_model.iloc[split_idx:]
+
+  X_train = train_df[features]
+  y_train = train_df["Return"]
+  X_test = test_df[features]
+  y_test = test_df["Return"]
+
+  eval_model = RandomForestRegressor(n_estimators=100, random_state=42)
+  eval_model.fit(X_train, y_train)
+  pred_test_returns = eval_model.predict(X_test)
+
+  # 평가 지표 산출을 위한 실제 종가 vs 예측 종가 복원 (전일 종가 기반 1-step 예측 종가)
+  prev_close_test = test_df["Close"].values / (1 + test_df["Return"].values)
+  y_true_close = test_df["Close"].values
+  y_pred_close = prev_close_test * (1 + pred_test_returns)
+
+  eval_rmse = float(np.sqrt(mean_squared_error(y_true_close, y_pred_close)))
+  eval_mae = float(mean_absolute_error(y_true_close, y_pred_close))
+  eval_r2 = float(r2_score(y_true_close, y_pred_close))
+  eval_mape = float(np.mean(np.abs((y_true_close - y_pred_close) / y_true_close)) * 100)
+
+  train_start_date = df_model["Date"].min().strftime("%Y-%m-%d")
+  train_end_date = df_model["Date"].max().strftime("%Y-%m-%d")
+
+  # 평가 지표 DB 적재 (model_evaluation_metrics 테이블)
+  insert_metric_sql = """
+      INSERT INTO model_evaluation_metrics (
+          ticker, model_name, train_start_date, train_end_date, sample_count,
+          rmse, mae, r2_score, mape_pct
+      )
+      VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+  """
+  with psycopg2.connect(DB_URL) as conn:
+    with conn.cursor() as cur:
+      cur.execute(
+          insert_metric_sql,
+          (
+              ticker,
+              "RandomForest_126D",
+              train_start_date,
+              train_end_date,
+              n_samples,
+              round(eval_rmse, 2),
+              round(eval_mae, 2),
+              round(eval_r2, 4),
+              round(eval_mape, 2),
+          ),
+      )
+    conn.commit()
+
+  print(
+      f"-> [모델 평가 완료] RMSE: {eval_rmse:,.2f}원 | MAE: {eval_mae:,.2f}원 |"
+      f" R2: {eval_r2:.4f} | MAPE: {eval_mape:.2f}% (샘플: {n_samples}건,"
+      " 검증 적재 완료)"
+  )
 
   # ------------------------------------------
   # B. 머신러닝 모델 학습 (파라미터 원본 동일)

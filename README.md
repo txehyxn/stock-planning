@@ -12,6 +12,7 @@ PostgreSQL 기반의 일별 시세 수집, RandomForest 126일 시계열 주가 
 - **Tables**:
   - `daily_stock_prices`: 일별 OHLCV 시세 원천 테이블 (PK: `ticker, target_date`)
   - `stock_predictions`: 머신러닝 126 영업일 종가 예측 결과 (UQ: `ticker, model_name, forecast_date`)
+  - `model_evaluation_metrics`: 머신러닝 모델 신뢰도 및 성능 평가 지표 (PK: `metric_id`, RMSE, MAE, R2, MAPE)
 - **Target Stocks**:
   - 한국전력 (`015760.KS`)
   - SK Telecom (`017670.KS`)
@@ -81,6 +82,25 @@ CREATE TABLE IF NOT EXISTS stock_predictions (
 -- 종목 및 예측 일자 기준 빠른 조회를 위한 복합 인덱스
 CREATE INDEX IF NOT EXISTS idx_stock_predictions_ticker_forecast 
 ON stock_predictions (ticker, forecast_date DESC);
+
+-- 머신러닝 모델 성능 평가 지표 테이블
+CREATE TABLE IF NOT EXISTS model_evaluation_metrics (
+    metric_id BIGSERIAL PRIMARY KEY,
+    ticker VARCHAR(20) NOT NULL,
+    model_name VARCHAR(50) NOT NULL,
+    train_start_date DATE NOT NULL,
+    train_end_date DATE NOT NULL,
+    sample_count INT NOT NULL,
+    rmse NUMERIC(12, 2) NOT NULL,
+    mae NUMERIC(12, 2) NOT NULL,
+    r2_score NUMERIC(6, 4) NOT NULL,
+    mape_pct NUMERIC(6, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 종목 및 모델별 평가지표 이력 조회 복합 인덱스
+CREATE INDEX IF NOT EXISTS idx_model_metrics_ticker_model 
+ON model_evaluation_metrics (ticker, model_name, created_at DESC);
 ```
 
 ### 실시간 분석 및 요약 뷰 (Views)
@@ -107,7 +127,38 @@ DBeaver 또는 백엔드 애플리케이션에서 복잡한 집계/윈도우 쿼
 
 ---
 
-## 4. 파이프라인 실행 순서
+## 4. 모델 평가 지표 추적 (Model Evaluation Metrics)
+
+머신러닝 모델의 예측 신뢰도를 정량적으로 추적하고 향후 모델 간 객관적 성능 비교가 가능하도록 `model_evaluation_metrics` 테이블을 구축하여 파이프라인 실행 시마다 검증 지표를 자동 산출·적재합니다.
+
+### 1) 시계열 분할 검증 (Time-Series Train/Test Split)
+주가 시계열 데이터의 시간 순서 특성을 보존하기 위해 무작위 셔플(Random Shuffle)을 배제하고, 과거 시계열의 80%를 학습셋(Train), 최신 20%를 테스트셋(Test)으로 분할하여 미래 가격 복원 예측에 대한 일반화 성능을 정밀 검증합니다.
+
+### 2) 4대 평가 지표 정의 및 의미
+| 평가 지표 | 영문 명칭 | 데이터 타입 | 정의 및 비즈니스적 의미 |
+| :--- | :--- | :--- | :--- |
+| **RMSE** | Root Mean Squared Error | `NUMERIC(12, 2)` | **평균 제곱근 오차** (단위: 원). 예측 오차의 제곱 평균에 루트를 씌운 지표로, 큰 오차(이상치)에 큰 페널티를 부여하여 급격한 주가 급등락 시점의 예측 실패 위험을 감지합니다. |
+| **MAE** | Mean Absolute Error | `NUMERIC(12, 2)` | **평균 절대 오차** (단위: 원). 예측값과 실제값의 절대적 오차 평균으로, 실제 주가 대비 평균적으로 몇 원 정도의 오차가 발생하는지 직관적으로 파악할 수 있습니다. |
+| **R² Score** | Coefficient of Determination | `NUMERIC(6, 4)` | **결정계수** ($-\infty \sim 1.0$). 모델이 주가 총 변동량(분산) 중 몇 %를 설명하는지를 나타내며, 1.0에 가까울수록 시계열의 추세와 방향성을 매우 우수하게 설명함을 의미합니다. |
+| **MAPE** | Mean Absolute Percentage Error | `NUMERIC(6, 2)` | **평균 절대 백분율 오차** (단위: %). 실제 주가 대비 오차의 비율을 백분율(%)로 환산한 지표로, 주가 수준(스케일)이 서로 다른 종목(예: 수십만 원대 삼성화재 vs 수만 원대 한국전력/SK텔레콤) 간의 예측 정확도를 공정하게 상호 비교할 수 있습니다. |
+
+### 3) 종목별 최신 모델 평가 결과 예시 (RandomForest_126D)
+| 종목코드 | 종목명 | 총 샘플수 (학습 / 검증) | RMSE (원) | MAE (원) | R² Score | MAPE (%) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| `000810.KS` | 삼성화재 | 1,122건 (897 / 225) | 14,167.07원 | 8,406.48원 | 0.9724 | 1.53% |
+| `015760.KS` | 한국전력 | 1,122건 (897 / 225) | 972.88원 | 663.61원 | 0.9899 | 1.53% |
+| `017670.KS` | SK텔레콤 | 1,122건 (897 / 225) | 2,661.53원 | 1,645.67원 | 0.9737 | 1.88% |
+
+- **조회 쿼리**:
+  ```sql
+  SELECT metric_id, ticker, model_name, train_start_date, train_end_date, sample_count, rmse, mae, r2_score, mape_pct, created_at
+  FROM model_evaluation_metrics
+  ORDER BY created_at DESC, ticker ASC;
+  ```
+
+---
+
+## 5. 파이프라인 실행 순서
 
 ### Step 1. 시세 데이터 수집 및 DB 적재
 ```bash
@@ -116,12 +167,13 @@ python data_to_db.py
 - `yfinance`를 통해 과거 4개년(2022-01-01 ~ 2026-01-01) 데이터를 수집합니다.
 - 중복 수집 시 `ON CONFLICT (ticker, target_date) DO UPDATE` (UPSERT)를 통해 최신값으로 자동 갱신됩니다.
 
-### Step 2. 머신러닝 모델 학습 및 미래 주가 예측
+### Step 2. 머신러닝 모델 평가 및 미래 주가 예측
 ```bash
 python predict_from_db.py
 ```
 - `daily_stock_prices`에서 과거 주가를 로드하여 9개 캔들 피처(이동평균 비율, 그림자 비율, 래그 수익률 등)를 생성합니다.
-- RandomForestRegressor를 학습하여 향후 126 영업일(약 6개월)의 종가를 재귀 예측하고 `stock_predictions` 테이블에 적재합니다.
+- 모델 학습 직전 시계열 80:20 분할 검증을 통해 RMSE, MAE, R2, MAPE 평가 지표를 산출하여 `model_evaluation_metrics`에 기록합니다.
+- 전체 데이터로 RandomForestRegressor를 학습하여 향후 126 영업일(약 6개월)의 종가를 재귀 예측하고 `stock_predictions` 테이블에 적재합니다.
 
 ### Step 3. 실제 시세 및 예측 차트 시각화
 ```bash
@@ -132,7 +184,7 @@ python visual_from_db.py
 
 ---
 
-## 5. 배치 스케줄러 자동 실행 (`scheduler.py`)
+## 6. 배치 스케줄러 자동 실행 (`scheduler.py`)
 
 매일 수동으로 스크립트를 실행할 필요 없이, 국내 증시 장 마감 후 정해진 시간에 전체 파이프라인(수집 → ML 예측 → 차트 생성)이 순차적으로 자동 실행되도록 일일 스케줄러를 지원합니다.
 
@@ -158,7 +210,7 @@ python scheduler.py
 
 ---
 
-## 6. 데이터베이스 백업 및 복구 가이드
+## 7. 데이터베이스 백업 및 복구 가이드
 
 Docker 볼륨 삭제, 테스트 데이터 롤백, 데이터 마이그레이션 상황에 대비하여 Windows 환경에서 원클릭으로 구동되는 데이터베이스 스냅샷 백업 및 복원 스크립트를 제공합니다.
 
@@ -187,7 +239,7 @@ Docker 볼륨 삭제, 테스트 데이터 롤백, 데이터 마이그레이션 �
 
 ---
 
-## 7. 데이터 품질 및 무결성 검증 (`check_data_quality.py`)
+## 8. 데이터 품질 및 무결성 검증 (`check_data_quality.py`)
 
 데이터베이스에 적재된 일별 시세 원천 데이터(`daily_stock_prices`)와 머신러닝 예측 데이터(`stock_predictions`)의 신뢰성을 전수 검사하는 데이터 품질 보증(Data Quality Assurance) 스크립트입니다.
 
