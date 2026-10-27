@@ -11,19 +11,37 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 # 기존 로컬 CSV 폴더 경로(data, predict) 대신 PostgreSQL DB 접속 URL을 사용합니다.
 DB_URL = "postgresql://postgres:1234@localhost:5432/stock_db"
 
+# ==========================================
+# 대상 종목 리스트 (총 6개 종목)
+# ==========================================
+TICKERS = [
+    "000810.KS",  # 삼성화재
+    "015760.KS",  # 한국전력
+    "017670.KS",  # SK텔레콤
+    "000660.KS",  # SK하이닉스 (신규)
+    "005930.KS",  # 삼성전자 (신규)
+    "005380.KS",  # 현대차 (신규)
+]
+
+STOCK_NAMES = {
+    "000810.KS": "삼성화재",
+    "015760.KS": "한국전력",
+    "017670.KS": "SK텔레콤",
+    "000660.KS": "SK하이닉스",
+    "005930.KS": "삼성전자",
+    "005380.KS": "현대차",
+}
+
 # ========================================================
-# [DB 연동 변경 지점] 파일 목록 검색(glob) -> DB 고유 종목(ticker) 목록 조회
-# ========================================================
-# [기존 원본 로직]:
-#   csv_files = glob.glob(os.path.join(data_folder, "*_stock_data.csv"))
-#
-# [DB 연동 치환 로직]:
-#   daily_stock_prices 테이블에서 수집된 고유 ticker 목록을 SELECT 쿼리로 가져옵니다.
+# [DB 연동 변경 지점] 대상 종목 리스트(TICKERS) 기반 DB 시세 검증 및 순회
 # ========================================================
 with psycopg2.connect(DB_URL) as conn:
   with conn.cursor() as cur:
     cur.execute("SELECT DISTINCT ticker FROM daily_stock_prices ORDER BY ticker;")
-    tickers = [row[0] for row in cur.fetchall()]
+    db_tickers = {row[0] for row in cur.fetchall()}
+
+# 상단 TICKERS 목록 중 DB에 수집된 종목 선별
+tickers = [t for t in TICKERS if t in db_tickers]
 
 if not tickers:
   print("[daily_stock_prices] 테이블 내에 수집된 주가 데이터가 없습니다.")
@@ -60,7 +78,7 @@ for ticker in tickers:
              close_price AS "Close",
              volume      AS "Volume"
       FROM daily_stock_prices
-      WHERE ticker = %s
+      WHERE ticker = %s AND target_date >= CURRENT_DATE - INTERVAL '1 year'
       ORDER BY target_date ASC;
   """
 
@@ -211,7 +229,7 @@ for ticker in tickers:
   model.fit(X, y)
 
   # ------------------------------------------
-  # C. 향후 6개월(126 영업일) 미래 예측 (노이즈 및 파동성 원본 동일)
+  # C. 향후 6개월(126 영업일) 미래 예측 (감쇠 Damping 및 클리핑 Clipping 적용)
   # ------------------------------------------
   last_date = df["Date"].max()
   future_dates = pd.date_range(
@@ -220,14 +238,16 @@ for ticker in tickers:
 
   # 최근 데이터 수집
   history_returns = list(df_model["Return"].values)
-  current_price = df["Close"].iloc[-1]
+  initial_price = df["Close"].iloc[-1]
+  current_price = initial_price
 
   forecast_records = []
 
-  # 노이즈를 살짝 더해 차트의 오르락내리락 파동성 부여
+  # 노이즈 및 과거 수익률 통계
   return_std = df_model["Return"].std()
+  return_mean = df_model["Return"].mean()
 
-  for f_date in future_dates:
+  for step_idx, f_date in enumerate(future_dates):
     # 최근 차트 패턴 지표 가공
     r_lag1 = history_returns[-1]
     r_lag2 = history_returns[-2]
@@ -253,16 +273,24 @@ for ticker in tickers:
         "Return_Lag2": r_lag2,
     }])
 
-    # 1) 수익률 예측 + 변동성 노이즈 주입 (차트 파동 유지)
-    pred_return = model.predict(input_feat)[0] + np.random.normal(
-        0, return_std * 0.5
-    )
+    # 1) 감쇠(Damping) 계수 계산: 미래로 갈수록 단기 모멘텀이 장기 정상 수익률(0근처)로 수렴
+    damping_factor = np.exp(-0.02 * step_idx)
 
-    # 2) 복원 주가 계산
-    current_price = current_price * (1 + pred_return)
-    history_returns.append(pred_return)
+    # 2) 모델 예측 수익률 산출 및 노이즈 주입
+    raw_return = model.predict(input_feat)[0]
+    noise = np.random.normal(0, return_std * 0.35) * damping_factor
+    combined_return = (raw_return * damping_factor) + (return_mean * (1 - damping_factor)) + noise
 
-    # 3) DB 적재용 튜플 구성: (ticker, model_name, forecast_date, predicted_close)
+    # 3) 일간 수익률 클리핑(Clipping): 비현실적인 일간 급등/급락 방지 (최대 ±2.5% 또는 2-시그마)
+    max_daily_return = min(0.025, max(0.015, return_std * 2.0))
+    clipped_return = float(np.clip(combined_return, -max_daily_return, max_daily_return))
+
+    # 4) 복원 주가 계산 및 현실적 6개월 주가 변동 범위(최근가 기준 70% ~ 140%) 클리핑
+    current_price = current_price * (1 + clipped_return)
+    current_price = float(np.clip(current_price, initial_price * 0.70, initial_price * 1.40))
+    history_returns.append(clipped_return)
+
+    # 5) DB 적재용 튜플 구성: (ticker, model_name, forecast_date, predicted_close)
     forecast_records.append((
         ticker,
         "RandomForest_126D",
@@ -292,6 +320,10 @@ for ticker in tickers:
 
   with psycopg2.connect(DB_URL) as conn:
     with conn.cursor() as cur:
+      cur.execute(
+          "DELETE FROM stock_predictions WHERE ticker = %s AND model_name = %s;",
+          (ticker, "RandomForest_126D"),
+      )
       execute_values(cur, upsert_pred_sql, forecast_records)
     conn.commit()
 

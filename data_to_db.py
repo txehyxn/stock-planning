@@ -11,93 +11,45 @@ import yfinance as yf
 # 기존 로컬 CSV 폴더(save_folder = "data") 대신 PostgreSQL DB 접속 URL을 사용합니다.
 DB_URL = "postgresql://postgres:1234@localhost:5432/stock_db"
 
-# 현재 날짜 기준 동적 계산 (종료일: 오늘, 시작일: 1년 전)
+# ==========================================
+# 대상 종목 리스트 (총 6개 종목)
+# ==========================================
+TICKERS = [
+    "000810.KS",  # 삼성화재
+    "015760.KS",  # 한국전력
+    "017670.KS",  # SK텔레콤
+    "000660.KS",  # SK하이닉스 (신규)
+    "005930.KS",  # 삼성전자 (신규)
+    "005380.KS",  # 현대차 (신규)
+]
+
+STOCK_NAMES = {
+    "000810.KS": "삼성화재",
+    "015760.KS": "한국전력",
+    "017670.KS": "SK텔레콤",
+    "000660.KS": "SK하이닉스",
+    "005930.KS": "삼성전자",
+    "005380.KS": "현대차",
+}
+
+# 현재 날짜 기준 동적 계산 (종료일: 오늘, 시작일: 1년 전 / 365일 전)
 today_str = datetime.now().strftime("%Y-%m-%d")
 one_year_ago_str = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+start_date = one_year_ago_str
+end_date = today_str
 
 print("======================================")
-print("Stock Data Collector Setup (자동 이름 검색) [DB 연동 버전]")
-print("======================================")
-print(
-    "Enter the stocks you want to collect. (Type 'done' or press Enter to"
-    " finish)"
-)
-print("Example - Ticker: 005930 (Auto-converted to 005930.KS)")
-print("-" * 50)
-
-target_stocks = {}
-
-while True:
-  ticker_input = (
-      input("Enter stock ticker (e.g., 005380, AAPL, or type 'done'): ")
-      .strip()
-      .upper()
-  )
-
-  if ticker_input == "DONE" or ticker_input == "":
-    if target_stocks:
-      break
-    else:
-      print("Please enter at least one stock.")
-      continue
-
-  # 6자리 숫자(국내 주식)인 경우 자동으로 .KS를 붙여줍니다.
-  ticker = (
-      ticker_input + ".KS"
-      if (ticker_input.isdigit() and len(ticker_input) == 6)
-      else ticker_input
-  )
-
-  # yfinance를 이용해 주식 이름 자동으로 가져오기
-  print(f"-> Fetching info for {ticker}...")
-  try:
-    info = yf.Ticker(ticker).info
-    # shortName이나 longName 가져오기
-    stock_name = (
-        info.get("shortName")
-        or info.get("longName")
-        or info.get("symbol")
-        or ticker_input
-    )
-    # 특수문자 제거
-    stock_name = (
-        stock_name.replace("/", "_")
-        .replace("\\", "_")
-        .replace(":", "_")
-        .replace("*", "_")
-        .replace("?", "_")
-        .replace('"', "_")
-        .replace("<", "_")
-        .replace(">", "_")
-        .replace("|", "_")
-    )
-  except Exception:
-    stock_name = ticker_input
-
-  target_stocks[ticker] = stock_name
-  print(f"-> Auto-added: {stock_name} ({ticker})\n")
-
-# Dynamic date input (현재 날짜 동적 적용)
-print("-" * 50)
-start_date = (
-    input(
-        f"Enter start date (YYYY-MM-DD) [default: {one_year_ago_str}]: "
-    ).strip()
-    or one_year_ago_str
-)
-end_date = (
-    input(f"Enter end date (YYYY-MM-DD) [default: {today_str}]: ").strip()
-    or today_str
-)
-
-print("\n======================================")
-print("Starting stock data collection to Database...")
+print("Stock Data Collector Setup [DB 연동 버전]")
 print("======================================")
 print(f"Database    : {DB_URL}")
 print(f"Table       : daily_stock_prices")
 print(f"Period      : {start_date} ~ {end_date}")
-print(f"Target List : {target_stocks}")
-print()
+print(f"Target List : {', '.join(TICKERS)}")
+print("-" * 50)
+
+# 수집 대상 종목 매핑 (상단 동기화된 TICKERS 기준)
+target_stocks = {ticker: STOCK_NAMES.get(ticker, ticker) for ticker in TICKERS}
+
 
 # Loop through the dictionary to collect and save data individually
 for ticker, stock_name in target_stocks.items():
@@ -153,20 +105,18 @@ for ticker, stock_name in target_stocks.items():
             volume = EXCLUDED.volume;
     """
 
-    # 결측치 제거 후 DB 컬럼 순서에 맞게 튜플 리스트 구성
+    # 결측치 제거 및 OHLC 가격 논리성 보정 (Yahoo Finance 배당/수정주가 오차 방지)
     df_clean = df.dropna(subset=["Date", "Open", "High", "Low", "Close", "Volume"])
-    records = [
-        (
-            ticker,
-            row["Date"],
-            float(row["Open"]),
-            float(row["High"]),
-            float(row["Low"]),
-            float(row["Close"]),
-            int(row["Volume"]),
-        )
-        for _, row in df_clean.iterrows()
-    ]
+    records = []
+    for _, row in df_clean.iterrows():
+      o = float(row["Open"])
+      h = float(row["High"])
+      l = float(row["Low"])
+      c = float(row["Close"])
+      v = int(row["Volume"])
+      real_h = max(o, h, l, c)
+      real_l = min(o, h, l, c)
+      records.append((ticker, row["Date"], o, real_h, real_l, c, v))
 
     # DB 커넥션 및 일괄 적재 실행
     with psycopg2.connect(DB_URL) as conn:
