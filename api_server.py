@@ -5,6 +5,7 @@
         (camelCase 직렬화, ApiResponse 공통 래퍼, Pydantic DTO 스키마 및 Swagger 태그 적용)
 """
 
+import os
 import sys
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,7 +14,8 @@ from contextlib import asynccontextmanager, contextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Path, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg2.pool import SimpleConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
@@ -198,6 +200,23 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
             error_code=error_code,
         ).model_dump(by_alias=True),
     )
+
+
+# =============================================================================
+# 정적 파일 마운트 및 웹 대시보드 루트 서빙
+# =============================================================================
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def serve_dashboard():
+    """웹 브라우저 접속 시 프론트엔드 통합 웹 대시보드(static/index.html)를 반환합니다."""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "static/index.html 파일을 찾을 수 없습니다."}
 
 
 # =============================================================================
@@ -501,7 +520,7 @@ if __name__ == "__main__":
     print("==================================================================")
     print("       FastAPI 기반 표준 REST API 서버 구동 (Uvicorn)")
     print("==================================================================")
-    print(" - 서버 URL : http://localhost:8000")
+    print(" - 웹 대시보드  : http://localhost:8000")
     print(" - Swagger 문서 : http://localhost:8000/docs")
     print(" - Redoc 문서   : http://localhost:8000/redoc")
     print("==================================================================")
