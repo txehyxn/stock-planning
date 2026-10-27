@@ -104,39 +104,35 @@ for ticker in tickers:
   df = df.sort_values("Date").reset_index(drop=True)
 
   # ------------------------------------------
-  # A. 차트 기반 특성(Feature) 생성 (OHLCV 전체 활용 - 원본 동일)
+  # A. 차트 기반 특성(Feature) 생성 (과거 60일 이동평균, 모멘텀, 역사적 변동성, 거래량 강도)
   # ------------------------------------------
   # 1) 일간 수익률 (Return)
   df["Return"] = df["Close"].pct_change()
 
-  # 2) 캔들 차트 형태 지표 (시가/고가/저가 반영)
-  df["Body_Ratio"] = (df["Close"] - df["Open"]) / df[
-      "Open"
-  ]  # 양봉/음봉 비율
-  df["High_Low_Ratio"] = (df["High"] - df["Low"]) / df[
-      "Close"
-  ]  # 당일 변동 폭
-  df["Upper_Shadow"] = (df["High"] - df[["Open", "Close"]].max(axis=1)) / df[
-      "Close"
-  ]  # 윗꼬리
-  df["Lower_Shadow"] = (df[["Open", "Close"]].min(axis=1) - df["Low"]) / df[
-      "Close"
-  ]  # 아랫꼬리
+  # 2) 다중 기간 모멘텀 (과거 5일, 20일, 60일 누적 수익률)
+  df["Momentum_5D"] = df["Close"] / df["Close"].shift(5) - 1.0
+  df["Momentum_20D"] = df["Close"] / df["Close"].shift(20) - 1.0
+  df["Momentum_60D"] = df["Close"] / df["Close"].shift(60) - 1.0
 
-  # 3) 이동평균선 대비 위치 (20일, 50일)
-  df["MA20_Ratio"] = (df["Close"] - df["Close"].rolling(20).mean()) / df[
-      "Close"
-  ].rolling(20).mean()
-  df["MA50_Ratio"] = (df["Close"] - df["Close"].rolling(50).mean()) / df[
-      "Close"
-  ].rolling(50).mean()
+  # 3) 이동평균선 및 이격도 (Disparity: 5일, 20일, 60일 이동평균선 대비 현재가 괴리율)
+  df["MA5"] = df["Close"].rolling(5).mean()
+  df["MA20"] = df["Close"].rolling(20).mean()
+  df["MA60"] = df["Close"].rolling(60).mean()
 
-  # 4) 거래량(Volume) 가중 지표
-  df["Vol_MA5_Ratio"] = (
-      df["Volume"] - df["Volume"].rolling(5).mean()
-  ) / df["Volume"].rolling(5).mean().replace(0, 1)
+  df["Disparity_5D"] = (df["Close"] - df["MA5"]) / df["MA5"]
+  df["Disparity_20D"] = (df["Close"] - df["MA20"]) / df["MA20"]
+  df["Disparity_60D"] = (df["Close"] - df["MA60"]) / df["MA60"]
 
-  # 5) Lag 특성 (과거 수익률)
+  # 4) 역사적 변동성 (Historical Volatility: 최근 20일간 일일 수익률 표준편차)
+  df["Hist_Vol_20D"] = df["Return"].rolling(20).std()
+
+  # 5) 거래량 강도 (최근 5일 / 20일 평균 거래량 비율)
+  df["Vol_Ratio"] = (
+      df["Volume"].rolling(5).mean()
+      / df["Volume"].rolling(20).mean().replace(0, 1.0)
+  )
+
+  # 6) Lag 특성 (과거 1일, 2일 수익률)
   df["Return_Lag1"] = df["Return"].shift(1)
   df["Return_Lag2"] = df["Return"].shift(2)
 
@@ -144,13 +140,14 @@ for ticker in tickers:
   df_model = df.dropna().copy()
 
   features = [
-      "Body_Ratio",
-      "High_Low_Ratio",
-      "Upper_Shadow",
-      "Lower_Shadow",
-      "MA20_Ratio",
-      "MA50_Ratio",
-      "Vol_MA5_Ratio",
+      "Momentum_5D",
+      "Momentum_20D",
+      "Momentum_60D",
+      "Disparity_5D",
+      "Disparity_20D",
+      "Disparity_60D",
+      "Hist_Vol_20D",
+      "Vol_Ratio",
       "Return_Lag1",
       "Return_Lag2",
   ]
@@ -228,74 +225,81 @@ for ticker in tickers:
   model = RandomForestRegressor(n_estimators=100, random_state=42)
   model.fit(X, y)
 
+  # 통계적 기준치 및 피처 관측 경계치 (외삽 방지)
+  hist_mean_return = float(df_model["Return"].mean())
+  hist_std_return = float(df_model["Return"].std())
+  recent_vol_ratio = float(df_model["Vol_Ratio"].iloc[-5:].mean())
+  feat_mins = df_model[features].min()
+  feat_maxs = df_model[features].max()
+
   # ------------------------------------------
-  # C. 향후 6개월(126 영업일) 미래 예측 (감쇠 Damping 및 클리핑 Clipping 적용)
+  # C. 향후 6개월(126 영업일) 미래 예측 (동적 롤링 윈도우 + 퀀트 평균회귀 및 역사적 변동성 파동)
   # ------------------------------------------
   last_date = df["Date"].max()
   future_dates = pd.date_range(
       start=last_date + pd.Timedelta(days=1), periods=126, freq="B"
   )
 
-  # 최근 데이터 수집
-  history_returns = list(df_model["Return"].values)
-  initial_price = df["Close"].iloc[-1]
-  current_price = initial_price
+  rolling_closes = list(df["Close"].values)
 
   forecast_records = []
-
-  # 노이즈 및 과거 수익률 통계
-  return_std = df_model["Return"].std()
-  return_mean = df_model["Return"].mean()
+  np.random.seed(42)
 
   for step_idx, f_date in enumerate(future_dates):
-    # 최근 차트 패턴 지표 가공
-    r_lag1 = history_returns[-1]
-    r_lag2 = history_returns[-2]
+    c_series = pd.Series(rolling_closes)
+    c_now = rolling_closes[-1]
+    ret_series = c_series.pct_change()
 
-    # 최근 지표들의 평균적 특성 기반 피처 생성
-    recent_body = df_model["Body_Ratio"].tail(5).mean()
-    recent_hl = df_model["High_Low_Ratio"].tail(5).mean()
-    recent_upper = df_model["Upper_Shadow"].tail(5).mean()
-    recent_lower = df_model["Lower_Shadow"].tail(5).mean()
-    recent_ma20 = df_model["MA20_Ratio"].tail(5).mean()
-    recent_ma50 = df_model["MA50_Ratio"].tail(5).mean()
-    recent_vol = df_model["Vol_MA5_Ratio"].tail(5).mean()
+    r_lag1 = float(ret_series.iloc[-1])
+    r_lag2 = float(ret_series.iloc[-2])
+    m_5d = float(c_now / rolling_closes[-6] - 1.0)
+    m_20d = float(c_now / rolling_closes[-21] - 1.0)
+    m_60d = float(c_now / rolling_closes[-61] - 1.0)
 
-    input_feat = pd.DataFrame([{
-        "Body_Ratio": recent_body,
-        "High_Low_Ratio": recent_hl,
-        "Upper_Shadow": recent_upper,
-        "Lower_Shadow": recent_lower,
-        "MA20_Ratio": recent_ma20,
-        "MA50_Ratio": recent_ma50,
-        "Vol_MA5_Ratio": recent_vol,
-        "Return_Lag1": r_lag1,
-        "Return_Lag2": r_lag2,
-    }])
+    ma5 = float(c_series.iloc[-5:].mean())
+    ma20 = float(c_series.iloc[-20:].mean())
+    ma60 = float(c_series.iloc[-60:].mean())
 
-    # 1) 감쇠(Damping) 계수 계산: 미래로 갈수록 단기 모멘텀이 장기 정상 수익률(0근처)로 수렴
-    damping_factor = np.exp(-0.02 * step_idx)
+    d_5d = float((c_now - ma5) / ma5)
+    d_20d = float((c_now - ma20) / ma20)
+    d_60d = float((c_now - ma60) / ma60)
+    h_vol = float(ret_series.iloc[-20:].std())
+    if np.isnan(h_vol) or h_vol <= 0:
+      h_vol = hist_std_return
 
-    # 2) 모델 예측 수익률 산출 및 노이즈 주입
-    raw_return = model.predict(input_feat)[0]
-    noise = np.random.normal(0, return_std * 0.35) * damping_factor
-    combined_return = (raw_return * damping_factor) + (return_mean * (1 - damping_factor)) + noise
+    # 피처 관측 범위 내 바운딩하여 Random Forest 모델에 전달 (안정적 롤링 보장)
+    feat_dict = {
+        "Momentum_5D": np.clip(m_5d, feat_mins["Momentum_5D"], feat_maxs["Momentum_5D"]),
+        "Momentum_20D": np.clip(m_20d, feat_mins["Momentum_20D"], feat_maxs["Momentum_20D"]),
+        "Momentum_60D": np.clip(m_60d, feat_mins["Momentum_60D"], feat_maxs["Momentum_60D"]),
+        "Disparity_5D": np.clip(d_5d, feat_mins["Disparity_5D"], feat_maxs["Disparity_5D"]),
+        "Disparity_20D": np.clip(d_20d, feat_mins["Disparity_20D"], feat_maxs["Disparity_20D"]),
+        "Disparity_60D": np.clip(d_60d, feat_mins["Disparity_60D"], feat_maxs["Disparity_60D"]),
+        "Hist_Vol_20D": np.clip(h_vol, feat_mins["Hist_Vol_20D"], feat_maxs["Hist_Vol_20D"]),
+        "Vol_Ratio": recent_vol_ratio,
+        "Return_Lag1": np.clip(r_lag1, feat_mins["Return_Lag1"], feat_maxs["Return_Lag1"]),
+        "Return_Lag2": np.clip(r_lag2, feat_mins["Return_Lag2"], feat_maxs["Return_Lag2"]),
+    }
 
-    # 3) 일간 수익률 클리핑(Clipping): 비현실적인 일간 급등/급락 방지 (최대 ±2.5% 또는 2-시그마)
-    max_daily_return = min(0.025, max(0.015, return_std * 2.0))
-    clipped_return = float(np.clip(combined_return, -max_daily_return, max_daily_return))
+    input_feat = pd.DataFrame([feat_dict])
+    raw_pred = float(model.predict(input_feat)[0])
 
-    # 4) 복원 주가 계산 및 현실적 6개월 주가 변동 범위(최근가 기준 70% ~ 140%) 클리핑
-    current_price = current_price * (1 + clipped_return)
-    current_price = float(np.clip(current_price, initial_price * 0.70, initial_price * 1.40))
-    history_returns.append(clipped_return)
+    # 시장 평균 회귀(Mean Reversion) 및 역사적 변동성 기반 파동 합성
+    alpha = 1.0 / (1.0 + step_idx / 30.0)
+    mean_rev_pull = -0.08 * d_20d - 0.04 * d_60d
+    wave_shock = np.random.normal(0, h_vol * 0.7)
 
-    # 5) DB 적재용 튜플 구성: (ticker, model_name, forecast_date, predicted_close)
+    next_return = (raw_pred * alpha) + (hist_mean_return * (1.0 - alpha)) + mean_rev_pull + wave_shock
+    next_close = max(100.0, c_now * (1.0 + next_return))
+
+    rolling_closes.append(next_close)
+
+    # DB 적재용 튜플 구성: (ticker, model_name, forecast_date, predicted_close)
     forecast_records.append((
         ticker,
         "RandomForest_126D",
         f_date.strftime("%Y-%m-%d"),
-        float(round(current_price, 1)),
+        float(round(next_close, 1)),
     ))
 
   # ------------------------------------------
