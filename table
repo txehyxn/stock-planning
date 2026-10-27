@@ -1,0 +1,120 @@
+Listed directory stock-planning-main
+Listed directory stock-planning-main
+Viewed README.md:1-150
+Viewed README.md:151-386
+Viewed REPORT.md:1-100
+Listed directory static
+Viewed api_server.py:1-100
+Viewed api_server.py:101-250
+Viewed api_server.py:251-400
+Viewed api_server.py:401-528
+Viewed data_to_db.py:1-100
+Viewed predict_from_db.py:1-110
+Viewed visual_from_db.py:1-80
+Viewed init.sql:1-150
+Viewed %EC%A3%BC%EC%8B%9D%EC%A2%85%EB%AA%A9.txt:1-7
+Viewed %EC%9E%85%EB%A0%A5%EA%B0%92.txt:1-13
+Viewed check_data_quality.py:1-60
+Viewed tune_query_performance.py:1-60
+Viewed scheduler.py:1-60
+Viewed docker-compose.yml:1-19
+
+이 저장소([stock-planning-main](file:///d:/stock-planning-main/stock-planning-main))는 **국내 주요 주식 시세 데이터 수집, PostgreSQL 데이터베이스 적재, 머신러닝(RandomForest) 기반 126영업일(약 6개월) 종가 예측, 모델 평가 지표 추적, 차트 시각화 및 웹 대시보드/REST API 서빙**까지 전 과정을 무인 자동화한 **엔드투엔드 주가 분석 및 예측 파이프라인**입니다.
+
+과거 CSV 파일 기반 구조(`data_2026_10_06.py`, `predict_2026_10_06.py`, `visual_2026_10_13.py`)에서 발생하던 데이터 중복 및 트랜잭션 한계를 극복하고, **PostgreSQL 17을 단일 진실 공급원(SSOT, Single Source of Truth)**으로 전환하여 구축되었습니다.
+
+---
+
+### 1. 전체 파이프라인 아키텍처 흐름
+
+```mermaid
+flowchart TD
+    subgraph S0["[0] 인프라 자동화"]
+        DC["docker-compose.yml"] -->|PostgreSQL 17 구동| DB[("stock_db (PostgreSQL)")]
+        INIT["init.sql"] -->|테이블·인덱스·뷰 자동생성| DB
+    end
+
+    subgraph S1["[1] 시세 수집 계층"]
+        YF["yfinance API"] --> DATA["data_to_db.py"]
+        DATA -->|UPSERT 적재| T1[("daily_stock_prices")]
+    end
+
+    subgraph S2["[2] AI/ML 예측 & 평가 계층"]
+        T1 --> PRED["predict_from_db.py"]
+        PRED -->|시계열 80:20 검증 지표| T3[("model_evaluation_metrics<br/>(RMSE, MAE, R², MAPE)")]
+        PRED -->|RandomForest 126일 예측| T2[("stock_predictions")]
+    end
+
+    subgraph S3["[3] 시각화 & 서빙 계층"]
+        T1 & T2 --> VIS["visual_from_db.py"]
+        VIS --> PNG["predict_charts/*.png"]
+        
+        DB --> API["FastAPI (api_server.py)"]
+        API --> WEB["웹 대시보드 (static/index.html)"]
+        API --> SWAGGER["Swagger/OpenAPI (/docs)"]
+    end
+
+    subgraph S4["[4] 운영 관리 & 품질 보증"]
+        SCHED["scheduler.py<br/>(평일 16:30 자동배치)"] -.->|순차 실행| DATA
+        SCHED -.->|순차 실행| PRED
+        SCHED -.->|순차 실행| VIS
+        
+        CHK["check_data_quality.py<br/>(5대 무결성 검증)"]
+        TUNE["tune_query_performance.py<br/>(EXPLAIN ANALYZE 튜닝)"]
+        BK["backup.bat / restore.bat<br/>(원클릭 스냅샷 백업·복구)"]
+    end
+```
+
+---
+
+### 2. 주요 구성 요소 및 파일별 역할
+
+| 구분 | 주요 파일 | 핵심 역할 및 기술 스펙 |
+| :--- | :--- | :--- |
+| **인프라 & DB** | [docker-compose.yml](file:///d:/stock-planning-main/stock-planning-main/docker-compose.yml)<br>[init.sql](file:///d:/stock-planning-main/stock-planning-main/init.sql) | • PostgreSQL 17 컨테이너 및 네임드 볼륨 관리<br>• 원천 시세/예측치/평가지표 테이블 DDL, B-Tree 인덱스, 실시간 분석 뷰 2종 자동 초기화 |
+| **시세 수집** | [data_to_db.py](file:///d:/stock-planning-main/stock-planning-main/data_to_db.py) | • `yfinance` 기반 대상 종목(삼성전자, SK하이닉스, 한국전력, SK텔레콤, 삼성화재, 현대차 등 6종) 시세 수집<br>• `ON CONFLICT (ticker, target_date) DO UPDATE` (UPSERT)로 중복 방지 및 멱등성 보장 |
+| **ML 학습·예측** | [predict_from_db.py](file:///d:/stock-planning-main/stock-planning-main/predict_from_db.py) | • 시계열 피처 엔지니어링 (수익률, 이동평균 비율, 변동성 등)<br>• 80:20 시계열 분할 평가 지표(RMSE, MAE, R², MAPE) 자동 산출 및 적재<br>• `RandomForestRegressor` 롤링 기반 향후 126 영업일 종가 재귀 예측 |
+| **차트 시각화** | [visual_from_db.py](file:///d:/stock-planning-main/stock-planning-main/visual_from_db.py) | • DB 내 과거 실제 시세와 미래 예측치를 결합한 브릿지 차트 생성<br>• `predict_charts/{ticker}_predict_chart.png`로 고해상도 이미지 저장 |
+| **무인 스케줄러** | [scheduler.py](file:///d:/stock-planning-main/stock-planning-main/scheduler.py) | • 국내 증시 마감 시점인 **매주 평일(월~금) 16:30** 전체 파이프라인 자동 순차 실행<br>• 실행 옵션: 상시 데몬(`scheduler.py`), 즉시 실행(`--run-now`), 단발성 실행(`--once`) |
+| **API & 웹 대시보드** | [api_server.py](file:///d:/stock-planning-main/stock-planning-main/api_server.py)<br>[static/index.html](file:///d:/stock-planning-main/stock-planning-main/static/index.html) | • FastAPI 기반 REST API (Connection Pooling, CORS, camelCase DTO 규격)<br>• 종목 시세 요약, OHLCV 이력, 126일 예측 궤적, 모델 평가지표 API 제공<br>• 통합 프론트엔드 웹 대시보드 서빙 (`http://localhost:8000`) |
+| **품질 & 성능** | [check_data_quality.py](file:///d:/stock-planning-main/stock-planning-main/check_data_quality.py)<br>[tune_query_performance.py](file:///d:/stock-planning-main/stock-planning-main/tune_query_performance.py) | • **5대 데이터 품질 검증**: OHLC 논리성, 이상치, NULL 결측치, 데이터 수집 일수(커버리지), 예측 일수 충족 검증<br>• `EXPLAIN (ANALYZE, BUFFERS)`를 통한 복합 B-Tree 인덱스 쿼리 튜닝 리포트 |
+| **백업 & 복구** | [backup.bat](file:///d:/stock-planning-main/stock-planning-main/backup.bat)<br>[restore.bat](file:///d:/stock-planning-main/stock-planning-main/restore.bat) | • Docker 컨테이너 내부 `pg_dump`를 통한 무중단 스냅샷 백업<br>• 최신 백업 자동 감지 복원 및 복원 직후 레코드 건수 정합성 검증 |
+| **문서 & 레거시** | [README.md](file:///d:/stock-planning-main/stock-planning-main/README.md)<br>[REPORT.md](file:///d:/stock-planning-main/stock-planning-main/REPORT.md)<br>`*_2026_10_*.py` | • 프로젝트 운영 매뉴얼 및 기술 완료 보고서<br>• 초기 CSV 기반 프로토타입 스크립트 보존 |
+
+---
+
+### 3. 데이터베이스 테이블 및 뷰 구조
+
+1. **`daily_stock_prices` (원천 시세)**
+   - PK: `(ticker, target_date)`
+   - 컬럼: 시가(`open_price`), 고가(`high_price`), 저가(`low_price`), 종가(`close_price`), 거래량(`volume`), 수집일시(`created_at`)
+   - 인덱스: `idx_daily_stock_prices_ticker_date` `(ticker, target_date DESC)`
+2. **`stock_predictions` (예측치)**
+   - PK: `prediction_id`, UNIQUE: `(ticker, model_name, forecast_date)`
+   - 컬럼: 예측 종가(`predicted_close`), 모델명(`RandomForest_126D`), 생성일시
+3. **`model_evaluation_metrics` (모델 신뢰도 지표)**
+   - PK: `metric_id`
+   - 컬럼: RMSE, MAE, R² Score, MAPE(%), 학습/검증 데이터 수, 측정일시
+4. **실시간 분석 뷰 2종**:
+   - `v_latest_stock_summary`: 최신 영업일 종가, 전일 대비 등락액/등락률, 누적 수집일수
+   - `v_prediction_overview`: 최신 종가 대비 126일 후 목표 예측가 및 기대 수익률(%)
+
+---
+
+### 4. 전체 파이프라인의 실행 사이클 요약
+
+1. **인프라 기동**: `docker compose up -d` (PostgreSQL 17 초기화)
+2. **데이터 파이프라인 1회 수동 실행 시**:
+   ```bash
+   python data_to_db.py          # 1단계: 시세 수집
+   python predict_from_db.py     # 2단계: AI 모델 학습 및 126일 예측
+   python visual_from_db.py      # 3단계: 예측 차트 생성
+   ```
+3. **무인 일일 자동화**: `python scheduler.py` (매 평일 16:30 자동 트리거)
+4. **서비스 서빙**: `python api_server.py` 실행 후 브라우저에서 `http://localhost:8000` 접속하여 대시보드 및 API 문서 확인
+5. **검증 및 유지관리**:
+   - 데이터 품질 검증: `python check_data_quality.py`
+   - 쿼리 성능 분석: `python tune_query_performance.py`
+   - 데이터 백업: `.\backup.bat`
+
+더 자세한 아키텍처 배경과 세부 벤치마크 결과는 [README.md](file:///d:/stock-planning-main/stock-planning-main/README.md) 및 [REPORT.md](file:///d:/stock-planning-main/stock-planning-main/REPORT.md)에서 확인하실 수 있습니다.
