@@ -382,4 +382,37 @@ python tune_query_performance.py
   curl http://localhost:8000/api/models/metrics
   ```
 
+---
+
+## 11. 99개 종목 126영업일 시계열 예측 및 FastAPI v2 연동 (`predict_99_real.py`)
+
+기존 6개 종목(PostgreSQL `stock_db` 기반 v1 API)과 충돌 없이, 국내 주요 **99개 상장 종목의 최근 2년 치 실제 시세(`Close`, `Volume`)를 수집하여 향후 126영업일(6개월) 주가를 예측**하고 홈페이지(프론트엔드/백엔드)에 즉시 통합할 수 있는 **v2 파이프라인 및 정적 리소스**를 제공합니다.
+
+### 1) 시계열 예측 알고리즘 및 파이프라인 실행
+```bash
+python predict_99_real.py
+```
+- **데이터 수집**: 99개 종목명을 KRX 종목코드(`.KS`)와 자동 매핑하여 `yfinance`로 최근 2년 치 일별 종가(`Close`) 및 거래량(`Volume`)을 수집합니다.
+- **실전 시계열 예측 모델**:
+  - 최근 60일·120일 **Ridge 회귀 추세**와 **감쇠 추세 지수평활(Holt's Linear Trend with Damped Trend, $\phi = 0.92$)**을 결합하여 장기 복리 폭주 현상 없이 완만하고 현실적인 추세선을 산출합니다.
+  - 과거 20일 이동평균(`MA20`) 회귀 성향과 종목별 고유 변동성(일일 표준편차의 $0.35$배)을 반영해 자연스러운 126영업일 등락 파동을 생성합니다.
+- **산출물 자동 갱신**:
+  - `0_26_11_10 주가 예측 프로젝트 중간 업무분담_261110/*_predicted_stock_data.csv` (99개 예측 CSV)
+  - `static/charts_99/{종목명}_chart.png` (99개 종목 고해상도 150 DPI 예측 차트 이미지)
+  - `static/data/stocks_99_summary.json` (99개 종목 핵심 지표 요약 리스트, 수익률 내림차순 정렬)
+  - `static/data/stocks_99_series.json` (99개 종목별 126영업일 `dates`, `prices` 시계열 딕셔너리)
+
+### 2) FastAPI v2 엔드포인트 및 정적 파일 구조
+| HTTP 메서드 | 경로 | 쿼리 / 경로 파라미터 | 설명 |
+| :--- | :--- | :--- | :--- |
+| **GET** | `/api/v2/stocks` | `search` (종목명 검색), `sort` (`return_desc`, `return_asc`, `name`, `name_desc`) | 99개 종목 전체 요약 리스트 조회 (검색 및 수익률순/가나다순 정렬 지원) |
+| **GET** | `/api/v2/stocks/{name}` | `name` (한글/영문 종목명, URL 인코딩 자동 디코딩) | 특정 종목 상세 요약 정보 + 126영업일 시계열(`dates`, `prices`) + 차트 이미지 경로 반환 |
+| **GET** | `/static/charts_99/{종목명}_chart.png` | 정적 파일 직접 서빙 | 각 종목별 6개월 주가 시뮬레이션 차트 PNG 이미지 직접 접근 |
+| **GET** | `/static/data/stocks_99_summary.json` | 정적 파일 직접 서빙 | 프론트엔드 단독 연동용 99개 종목 요약 JSON |
+| **GET** | `/static/data/stocks_99_series.json` | 정적 파일 직접 서빙 | 프론트엔드 인터랙티브 차트(Chart.js 등) 렌더링용 시계열 JSON |
+
+### 3) 팀원 전달 및 프론트엔드 연동 가이드 (`TEAM_HANDOFF.md`)
+- API 응답 JSON 예시와 Vanilla HTML/JS, React, Vue 3 프론트엔드 연동 샘플 코드는 프로젝트 루트의 **[TEAM_HANDOFF.md](TEAM_HANDOFF.md)** 문서에서 바로 확인할 수 있습니다.
+
+
 

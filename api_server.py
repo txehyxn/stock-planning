@@ -7,9 +7,11 @@
 
 import os
 import sys
+import json
+from urllib.parse import unquote
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional, TypeVar, Generic, Any
+from typing import List, Optional, TypeVar, Generic, Any, Dict
 from contextlib import asynccontextmanager, contextmanager
 
 import uvicorn
@@ -41,14 +43,14 @@ db_pool: Optional[SimpleConnectionPool] = None
 
 
 def init_db_pool():
-    """데이터베이스 커넥션 풀을 초기화합니다 (min 1, max 10)."""
+    """데이터베이스 커넥션 풀을 초기화합니다 (min 1, max 10). DB 미기동 환경에서도 v2 정적 API가 동작하도록 예외를 안전하게 처리합니다."""
     global db_pool
     try:
         db_pool = SimpleConnectionPool(minconn=1, maxconn=10, dsn=DB_URL)
         print("[DB Pool] PostgreSQL 연결 풀 생성 완료 (min=1, max=10)")
     except Exception as e:
-        print(f"[DB Pool Error] 연결 풀 초기화 실패: {e}")
-        raise e
+        db_pool = None
+        print(f"[DB Pool Warning] PostgreSQL 미연결 상태로 기동합니다 (v2 99개 종목 API 및 정적 파일은 정상 동작): {e}")
 
 
 def close_db_pool():
@@ -170,16 +172,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 프론트엔드 로컬 개발 환경(Vite/Next.js/React) 지원을 위한 전역 CORS 미들웨어 적용
+# 프론트엔드 연동을 위해 CORSMiddleware에서 모든 origin("*") 허용
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "*",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -190,7 +186,7 @@ app.add_middleware(
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     """HTTP 예외를 표준 ApiResponse JSON 에러 규격으로 변환하여 반환"""
     error_code = "STOCK_NOT_FOUND" if exc.status_code == 404 else f"HTTP_{exc.status_code}"
-    message = "해당 종목을 찾을 수 없습니다." if exc.status_code == 404 else str(exc.detail)
+    message = str(exc.detail) if exc.detail else ("해당 종목을 찾을 수 없습니다." if exc.status_code == 404 else f"HTTP {exc.status_code}")
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse(
@@ -206,8 +202,8 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 # 정적 파일 마운트 및 웹 대시보드 루트 서빙
 # =============================================================================
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-if os.path.exists(STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/", include_in_schema=False)
@@ -511,6 +507,126 @@ def get_models_metrics():
         data=items,
         message=f"전체 {len(items)}개 종목의 모델 평가 지표를 성공적으로 조회하였습니다.",
     )
+
+
+# =============================================================================
+# 99개 종목 전용 REST API 엔드포인트 구현 (v2 정적 데이터 연동 규격)
+# =============================================================================
+DATA_99_SUMMARY_PATH = os.path.join(STATIC_DIR, "data", "stocks_99_summary.json")
+DATA_99_SERIES_PATH = os.path.join(STATIC_DIR, "data", "stocks_99_series.json")
+
+
+def _load_stocks_99_summary() -> List[Dict[str, Any]]:
+    """99개 종목 요약 JSON 파일을 로드합니다."""
+    if not os.path.exists(DATA_99_SUMMARY_PATH):
+        raise HTTPException(
+            status_code=500,
+            detail="stocks_99_summary.json 파일이 존재하지 않습니다. process_99_stocks.py를 먼저 실행해 주세요.",
+        )
+    with open(DATA_99_SUMMARY_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_stocks_99_series() -> Dict[str, Dict[str, List[Any]]]:
+    """99개 종목 126일 시계열 JSON 파일을 로드합니다."""
+    if not os.path.exists(DATA_99_SERIES_PATH):
+        raise HTTPException(
+            status_code=500,
+            detail="stocks_99_series.json 파일이 존재하지 않습니다. process_99_stocks.py를 먼저 실행해 주세요.",
+        )
+    with open(DATA_99_SERIES_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.get(
+    "/api/v2/stocks",
+    tags=["99개 종목 예측 (v2)"],
+    summary="99개 종목 전체 요약 리스트 조회 (검색 및 정렬 지원)",
+    description=(
+        "99개 종목의 6개월(126영업일) 예측 요약 리스트를 반환합니다. "
+        "`search` 파라미터로 종목명 부분 검색이 가능하며, "
+        "`sort` 파라미터로 수익률순(`return_desc`, `return_asc`) 또는 가나다순(`name`, `name_desc`) 정렬을 지원합니다."
+    ),
+)
+def get_v2_stocks(
+    search: Optional[str] = Query(None, description="종목명 검색어 (예: '삼성', 'SK', '현대')"),
+    sort: Optional[str] = Query(
+        "return_desc",
+        description="정렬 기준: 'return_desc'(수익률 내림차순, 기본값), 'return_asc'(수익률 오름차순), 'name'(가나다순), 'name_desc'(가나다 역순)",
+    ),
+):
+    """99개 종목 전체 요약 리스트를 검색 및 정렬 조건에 맞게 반환합니다."""
+    items = _load_stocks_99_summary()
+
+    # 1. 종목명 검색 필터링 (대소문자 무시 부분 일치)
+    if search and search.strip():
+        keyword = search.strip().lower()
+        items = [item for item in items if keyword in str(item.get("name", "")).lower()]
+
+    # 2. 정렬 처리 (수익률순 / 가나다순)
+    sort_key = (sort or "return_desc").strip().lower()
+    if sort_key in ("name", "name_asc", "가나다순", "alpha"):
+        items.sort(key=lambda x: x["name"])
+    elif sort_key in ("name_desc", "가나다역순"):
+        items.sort(key=lambda x: x["name"], reverse=True)
+    elif sort_key in ("return_asc", "asc", "수익률오름차순"):
+        items.sort(key=lambda x: x["expected_return_pct"])
+    else:
+        # 기본값: 예상 수익률 내림차순 (return_desc, return, 수익률순, desc)
+        items.sort(key=lambda x: x["expected_return_pct"], reverse=True)
+
+    return {
+        "success": True,
+        "total": len(items),
+        "data": items,
+        "message": f"총 {len(items)}개 종목 요약 정보를 조회하였습니다.",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get(
+    "/api/v2/stocks/{name}",
+    tags=["99개 종목 예측 (v2)"],
+    summary="특정 종목 상세 요약 + 126일 시계열 데이터 조회",
+    description="종목명(예: `삼성전자`, `KT&G`, `삼성E&A`)을 기준으로 상세 요약 지표, 126일 예측 시계열(`dates`, `prices`), 차트 이미지 경로를 통합 반환합니다.",
+)
+def get_v2_stock_detail(
+    name: str = Path(..., description="조회할 종목명 (예: '삼성전자', 'KT&G', '삼성E&A')"),
+):
+    """특정 종목의 상세 요약 정보와 126일 시계열(dates, prices) 및 차트 이미지 경로를 반환합니다."""
+    decoded_name = unquote(name).strip()
+    summary_list = _load_stocks_99_summary()
+    series_dict = _load_stocks_99_series()
+
+    # 정확 일치 우선 탐색, 없을 경우 대소문자 무시 탐색
+    matched_summary = next((item for item in summary_list if item["name"] == decoded_name), None)
+    if matched_summary is None:
+        matched_summary = next(
+            (item for item in summary_list if item["name"].lower() == decoded_name.lower()),
+            None,
+        )
+
+    if matched_summary is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{decoded_name}' 종목을 찾을 수 없습니다.",
+        )
+
+    canonical_name = matched_summary["name"]
+    series_data = series_dict.get(canonical_name, {"dates": [], "prices": []})
+
+    detail_payload = {
+        **matched_summary,
+        "dates": series_data.get("dates", []),
+        "prices": series_data.get("prices", []),
+    }
+
+    return {
+        "success": True,
+        "data": detail_payload,
+        "message": f"[{canonical_name}] 상세 예측 요약 및 {len(detail_payload['dates'])}영업일 시계열 데이터를 조회하였습니다.",
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
 # =============================================================================
