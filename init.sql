@@ -269,3 +269,63 @@ SELECT
     min_predicted_close AS "예측기간최저가",
     max_predicted_close AS "예측기간최고가"
 FROM v_prediction_overview;
+
+
+-- ------------------------------------------------------------------------------
+-- 6. 99개 종목 확장 예측 전용 테이블 및 pgAdmin 한글 뷰 2종
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stocks_99_summary (
+    stock_name          VARCHAR(50)    PRIMARY KEY,
+    ticker              VARCHAR(20)    NOT NULL,
+    actual_base_date    DATE           NOT NULL,
+    actual_close        NUMERIC(14, 2) NOT NULL,
+    start_date          DATE           NOT NULL,
+    end_date            DATE           NOT NULL,
+    start_price         NUMERIC(14, 2) NOT NULL,
+    target_price        NUMERIC(14, 2) NOT NULL,
+    expected_return_pct NUMERIC(8, 2)  NOT NULL,
+    max_price           NUMERIC(14, 2) NOT NULL,
+    min_price           NUMERIC(14, 2) NOT NULL,
+    volatility_pct      NUMERIC(8, 2)  NOT NULL,
+    chart_image_url     VARCHAR(255)   NOT NULL,
+    created_at          TIMESTAMP      DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_stocks_99_summary_return
+ON stocks_99_summary (expected_return_pct DESC);
+
+CREATE TABLE IF NOT EXISTS stocks_99_predictions (
+    prediction_id   BIGSERIAL      PRIMARY KEY,
+    stock_name      VARCHAR(50)    NOT NULL,
+    forecast_date   DATE           NOT NULL,
+    predicted_close NUMERIC(14, 2) NOT NULL,
+    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_stocks_99_name_date UNIQUE (stock_name, forecast_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stocks_99_predictions_name_date
+ON stocks_99_predictions (stock_name, forecast_date ASC);
+
+-- [한글 뷰 6] 99개 종목 예측 요약
+CREATE OR REPLACE VIEW v_99종목_예측요약 AS
+SELECT
+    stock_name          AS "종목명",
+    actual_base_date    AS "기준일",
+    actual_close        AS "현재가",
+    target_price        AS "목표가_6개월후",
+    expected_return_pct AS "예상수익률",
+    max_price           AS "기간최고가",
+    min_price           AS "기간최저가",
+    volatility_pct      AS "일간변동성"
+FROM stocks_99_summary
+ORDER BY expected_return_pct DESC, stock_name ASC;
+
+-- [한글 뷰 7] 99개 종목 126영업일 일별 예측
+CREATE OR REPLACE VIEW v_99종목_일별예측 AS
+SELECT
+    stock_name      AS "종목명",
+    forecast_date   AS "예측일자",
+    predicted_close AS "예측종가"
+FROM stocks_99_predictions
+ORDER BY stock_name ASC, forecast_date ASC;
+

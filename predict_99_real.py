@@ -601,8 +601,12 @@ def main():
     ticker_map = resolve_krx_ticker_map(stock_names)
     history_by_name = fetch_2y_history_batch(ticker_map)
 
-    # 향후 126영업일 예측 구간 설정 (2026-11-16 이후 126영업일)
-    forecast_start = pd.Timestamp("2026-11-16")
+    # 향후 126영업일 예측 구간 동적 설정 (수집된 최신 거래일 다음 영업일부터 126영업일)
+    if history_by_name:
+        latest_market_date = max(df["Date"].iloc[-1] for df in history_by_name.values())
+        forecast_start = latest_market_date + pd.offsets.BDay(1)
+    else:
+        forecast_start = pd.Timestamp.now().normalize() + pd.offsets.BDay(1)
     future_dates = pd.date_range(start=forecast_start, periods=126, freq="B")
     future_date_strs = [d.strftime("%Y-%m-%d") for d in future_dates]
 

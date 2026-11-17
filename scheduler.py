@@ -71,20 +71,22 @@ def get_subprocess_env(non_interactive_chart=False):
 def run_pipeline():
   """주가 데이터 파이프라인 전체를 순차적으로 실행하는 메인 작업 함수.
 
-  1단계: data_to_db.py    (일별 시세 수집 및 daily_stock_prices 테이블 적재)
-  2단계: predict_from_db.py (OHLCV 차트 피처 생성, RF 모델 학습 및 126일 예측치 적재)
-  3단계: visual_from_db.py  (DB 시세/예측치 조회 및 차트 이미지 PNG 생성)
+  1단계: data_to_db.py      (기존 6개 종목 일별 시세 수집 및 daily_stock_prices 적재)
+  2단계: predict_from_db.py (기존 6개 종목 RF 모델 학습 및 126일 예측치 적재)
+  3단계: visual_from_db.py  (기존 6개 종목 시세/예측치 조회 및 차트 PNG 생성)
+  4단계: predict_99_real.py (99개 종목 실제 시세 수집, 126일 예측, 차트 99종 및 JSON 2종 갱신)
+  5단계: load_99_to_db.py   (99개 종목 예측 요약 및 126일 시계열 PostgreSQL DB 적재)
   """
   pipeline_start_time = time.perf_counter()
   logger.info("==================================================")
-  logger.info(">> [START] 일일 주가 데이터 자동화 파이프라인 시작")
+  logger.info(">> [START] 일일 주가 데이터 자동화 파이프라인 시작 (6종목 + 99종목 통합)")
   logger.info("==================================================")
 
   # --------------------------------------------------------------------------
   # [1단계] 시세 데이터 수집 및 PostgreSQL DB 적재 (data_to_db.py)
   # --------------------------------------------------------------------------
   step1_start = time.perf_counter()
-  logger.info("[Step 1/3] 시세 데이터 수집 시작 (data_to_db.py)...")
+  logger.info("[Step 1/5] 기존 6개 종목 시세 데이터 수집 시작 (data_to_db.py)...")
 
   try:
     # data_to_db.py의 사용자 대화형 입력을 배치 모드로 자동화하기 위해 표준 입력(stdin) 구성
@@ -105,26 +107,26 @@ def run_pipeline():
     step1_duration = time.perf_counter() - step1_start
     if result_step1.returncode == 0:
       logger.info(
-          f"-> [Step 1/3 성공] 시세 수집 및 DB 적재 완료 (소요시간:"
+          f"-> [Step 1/5 성공] 6개 종목 시세 수집 및 DB 적재 완료 (소요시간:"
           f" {step1_duration:.2f}초)"
       )
     else:
       logger.error(
-          f"-> [Step 1/3 실패] 시세 수집 오류 발생 (Exit code:"
+          f"-> [Step 1/5 실패] 시세 수집 오류 발생 (Exit code:"
           f" {result_step1.returncode})"
       )
       if result_step1.stderr:
         logger.error(f"   [에러 상세]:\n{result_step1.stderr.strip()}")
   except Exception as e:
     step1_duration = time.perf_counter() - step1_start
-    logger.error(f"-> [Step 1/3 예외 발생] {e} (소요시간: {step1_duration:.2f}초)")
+    logger.error(f"-> [Step 1/5 예외 발생] {e} (소요시간: {step1_duration:.2f}초)")
 
   # --------------------------------------------------------------------------
   # [2단계] 머신러닝(RandomForest) 재학습 및 미래 주가 예측 (predict_from_db.py)
   # --------------------------------------------------------------------------
   step2_start = time.perf_counter()
   logger.info(
-      "[Step 2/3] 머신러닝 학습 및 향후 126 영업일 예측 시작"
+      "[Step 2/5] 기존 6개 종목 머신러닝 학습 및 향후 126 영업일 예측 시작"
       " (predict_from_db.py)..."
   )
 
@@ -142,25 +144,25 @@ def run_pipeline():
     step2_duration = time.perf_counter() - step2_start
     if result_step2.returncode == 0:
       logger.info(
-          f"-> [Step 2/3 성공] ML 모델 예측치 stock_predictions 테이블 적재 완료"
+          f"-> [Step 2/5 성공] ML 모델 예측치 stock_predictions 테이블 적재 완료"
           f" (소요시간: {step2_duration:.2f}초)"
       )
     else:
       logger.error(
-          f"-> [Step 2/3 실패] ML 예측 모델링 오류 발생 (Exit code:"
+          f"-> [Step 2/5 실패] ML 예측 모델링 오류 발생 (Exit code:"
           f" {result_step2.returncode})"
       )
       if result_step2.stderr:
         logger.error(f"   [에러 상세]:\n{result_step2.stderr.strip()}")
   except Exception as e:
     step2_duration = time.perf_counter() - step2_start
-    logger.error(f"-> [Step 2/3 예외 발생] {e} (소요시간: {step2_duration:.2f}초)")
+    logger.error(f"-> [Step 2/5 예외 발생] {e} (소요시간: {step2_duration:.2f}초)")
 
   # --------------------------------------------------------------------------
   # [3단계] 실제 시세 및 예측 차트 이미지 생성 (visual_from_db.py)
   # --------------------------------------------------------------------------
   step3_start = time.perf_counter()
-  logger.info("[Step 3/3] 주가 예측 차트 생성 시작 (visual_from_db.py)...")
+  logger.info("[Step 3/5] 기존 6개 종목 주가 예측 차트 생성 시작 (visual_from_db.py)...")
 
   try:
     # 백그라운드 스케줄러 환경에서 plt.show() 팝업 창 블로킹 방지를 위해 Agg 백엔드 환경변수 주입
@@ -177,19 +179,87 @@ def run_pipeline():
     step3_duration = time.perf_counter() - step3_start
     if result_step3.returncode == 0:
       logger.info(
-          "-> [Step 3/3 성공] predict_charts 폴더 내 차트 이미지 갱신 완료"
+          "-> [Step 3/5 성공] predict_charts 폴더 내 차트 이미지 갱신 완료"
           f" (소요시간: {step3_duration:.2f}초)"
       )
     else:
       logger.error(
-          f"-> [Step 3/3 실패] 차트 시각화 오류 발생 (Exit code:"
+          f"-> [Step 3/5 실패] 차트 시각화 오류 발생 (Exit code:"
           f" {result_step3.returncode})"
       )
       if result_step3.stderr:
         logger.error(f"   [에러 상세]:\n{result_step3.stderr.strip()}")
   except Exception as e:
     step3_duration = time.perf_counter() - step3_start
-    logger.error(f"-> [Step 3/3 예외 발생] {e} (소요시간: {step3_duration:.2f}초)")
+    logger.error(f"-> [Step 3/5 예외 발생] {e} (소요시간: {step3_duration:.2f}초)")
+
+  # --------------------------------------------------------------------------
+  # [4단계] 99개 종목 실제 시세 수집, 126일 예측, 차트 99종 & JSON 갱신 (predict_99_real.py)
+  # --------------------------------------------------------------------------
+  step4_start = time.perf_counter()
+  logger.info("[Step 4/5] 99개 종목 시세 수집 및 126영업일 예측 시작 (predict_99_real.py)...")
+
+  try:
+    result_step4 = subprocess.run(
+        [sys.executable, "predict_99_real.py"],
+        env=get_subprocess_env(non_interactive_chart=True),
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    step4_duration = time.perf_counter() - step4_start
+    if result_step4.returncode == 0:
+      logger.info(
+          "-> [Step 4/5 성공] 99개 종목 126일 예측, 차트 99장 및 JSON 2종 갱신 완료"
+          f" (소요시간: {step4_duration:.2f}초)"
+      )
+    else:
+      logger.error(
+          f"-> [Step 4/5 실패] 99개 종목 예측 파이프라인 오류 발생 (Exit code:"
+          f" {result_step4.returncode})"
+      )
+      if result_step4.stderr:
+        logger.error(f"   [에러 상세]:\n{result_step4.stderr.strip()}")
+  except Exception as e:
+    step4_duration = time.perf_counter() - step4_start
+    logger.error(f"-> [Step 4/5 예외 발생] {e} (소요시간: {step4_duration:.2f}초)")
+
+  # --------------------------------------------------------------------------
+  # [5단계] 99개 종목 예측 요약 및 126일 시계열 PostgreSQL DB 적재 (load_99_to_db.py)
+  # --------------------------------------------------------------------------
+  step5_start = time.perf_counter()
+  logger.info("[Step 5/5] 99개 종목 예측 결과 PostgreSQL DB 적재 시작 (load_99_to_db.py)...")
+
+  try:
+    result_step5 = subprocess.run(
+        [sys.executable, "load_99_to_db.py"],
+        env=get_subprocess_env(),
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    step5_duration = time.perf_counter() - step5_start
+    if result_step5.returncode == 0:
+      logger.info(
+          "-> [Step 5/5 성공] stocks_99_summary(99행) 및 stocks_99_predictions(12,474행) DB 적재 완료"
+          f" (소요시간: {step5_duration:.2f}초)"
+      )
+    else:
+      logger.error(
+          f"-> [Step 5/5 실패] 99개 종목 DB 적재 오류 발생 (Exit code:"
+          f" {result_step5.returncode})"
+      )
+      if result_step5.stderr:
+        logger.error(f"   [에러 상세]:\n{result_step5.stderr.strip()}")
+  except Exception as e:
+    step5_duration = time.perf_counter() - step5_start
+    logger.error(f"-> [Step 5/5 예외 발생] {e} (소요시간: {step5_duration:.2f}초)")
 
   # --------------------------------------------------------------------------
   # 전체 파이프라인 종료 요약
