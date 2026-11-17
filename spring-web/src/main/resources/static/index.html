@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Cache-Control" content="no-store">
+  <meta name="description" content="국내 우량 주식 데이터 분석 전문 워크스페이스">
+  <title>STOCK ANALYST | 주식 데이터 분석 워크스페이스</title>
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('stock-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')}catch(e){document.documentElement.dataset.theme='light'}</script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/styles.css?v=stock-update-20261015-2">
+  <script src="/app.js?v=stock-update-20261015-2" defer></script>
+</head>
+<body class="w-full min-h-screen flex flex-col bg-[var(--bg)] text-[var(--text)]">
+  <!-- 상단 고정 영역: 홈 이동, 시장 참고 지표, 데이터 연결 상태, 다크모드 전환 -->
+  <header class="fixed top-0 left-0 right-0 h-16 border-b border-gray-200 bg-white/95 backdrop-blur-md z-50 app-header">
+    <div class="max-w-[1680px] 2xl:max-w-[1760px] mx-auto h-full px-6 flex items-center justify-between">
+      <div class="flex items-center gap-6">
+        <a href="#main" class="flex items-center gap-3 focus:outline-none" aria-label="STOCK ANALYST 홈">
+          <div class="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shadow-sm brand-icon">
+            <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 18V6"></path>
+              <path d="M4 18h16"></path>
+              <path d="m7 14 3-3 3 2 5-6"></path>
+              <path d="M17 7h2v2"></path>
+            </svg>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-lg font-extrabold tracking-tight text-gray-900 brand-title">STOCK ANALYST</span>
+          </div>
+        </a>
+
+        <!-- 시장 참고 지표: 현재는 화면 상단에 표시하는 참고용 예시 값 -->
+        <div class="hidden lg:flex items-center gap-4 pl-6 border-l border-gray-200 market-ticker text-xs text-gray-500" aria-label="시장 참고 지표 예시 데이터">
+          <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">시장 참고 · 예시</span>
+          <div class="flex items-center gap-1.5 font-medium">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span class="ticker-label">KOSPI</span>
+            <span class="font-bold ticker-val">2,580.45</span>
+            <span class="text-red-600 font-semibold font-numeric">▲ +0.72%</span>
+          </div>
+          <div class="flex items-center gap-1.5 font-medium">
+            <span class="ticker-label">KOSDAQ</span>
+            <span class="font-bold ticker-val">742.10</span>
+            <span class="text-red-600 font-semibold font-numeric">▲ +0.35%</span>
+          </div>
+          <div class="flex items-center gap-1.5 font-medium">
+            <span class="ticker-label">USD/KRW</span>
+            <span class="font-bold ticker-val">1,385.50</span>
+            <span class="text-blue-600 font-semibold font-numeric">▼ -2.50</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <button id="theme-toggle" class="theme-button" type="button" aria-label="다크모드로 전환" title="다크모드로 전환">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 13A9 9 0 0 1 11 3.2 9 9 0 1 0 20.8 13Z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 메인 분석 화면: 왼쪽 종목 목록과 오른쪽 선택 종목 상세 정보를 함께 표시 -->
+  <main class="flex-1 pt-16 w-full">
+    <div class="max-w-[1680px] 2xl:max-w-[1760px] mx-auto px-4 sm:px-6 py-6 flex flex-col lg:flex-row gap-6">
+      
+      <!-- 왼쪽 영역: 종목 검색과 분석 대상 종목 목록 -->
+      <aside id="watchlist-sidebar" class="w-full lg:w-[330px] xl:w-[350px] flex-shrink-0">
+        <div class="watchlist-panel bg-white border border-gray-200 rounded-2xl p-4 shadow-sm sticky top-20">
+          <div class="flex items-center justify-between mb-3 px-1">
+            <div class="flex items-center gap-2">
+              <h2 class="text-sm font-bold text-gray-900 tracking-tight panel-title">분석 대상 종목</h2>
+              <span id="watchlist-count" class="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">6</span>
+            </div>
+            <button id="watchlist-toggle" class="watchlist-toggle" type="button" aria-expanded="true">종목 목록 접기</button>
+          </div>
+
+          <!-- 종목명 또는 종목 코드로 목록을 빠르게 필터링 -->
+          <div class="relative mb-3">
+            <input id="watchlist-search" type="text" placeholder="종목명 또는 코드 검색..." class="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 pl-9 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white transition-all text-gray-800 search-input" />
+            <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            </svg>
+          </div>
+
+          <!-- 종목 항목은 app.js가 API 또는 demo-stocks.json을 읽은 뒤 생성 -->
+          <div id="watchlist-list" class="space-y-2 max-h-[calc(100vh-210px)] overflow-y-auto pr-1" role="tablist" aria-label="종목 리스트">
+            <div class="watchlist-loading" aria-live="polite">종목 데이터를 불러오는 중...</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 오른쪽 영역: 현재 선택된 종목의 가격, 지표, 차트 -->
+      <section class="flex-1 min-w-0 space-y-6" id="workspace-content">
+
+        <!-- 종목 기본 정보: 로고, 코드, 업종, 현재가, 등락률, 기간 선택 -->
+        <div class="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm overview-card">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-5">
+            <div class="flex items-center gap-4">
+              <div id="detail-logo" class="w-14 h-14 rounded-2xl bg-gray-50 border border-gray-100 flex items-center justify-center p-2 flex-shrink-0 logo-box">
+                <!-- Stock logo inserted by app.js -->
+              </div>
+              <div>
+                <div class="flex items-center gap-2 mb-1">
+                  <span id="detail-code" class="text-xs font-mono font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded code-pill"></span>
+                  <span id="detail-sector" class="text-xs text-gray-500 font-medium sector-pill"></span>
+                  <span class="text-[11px] font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full">KOSPI</span>
+                </div>
+                <h1 id="detail-name" class="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight" tabindex="-1"></h1>
+              </div>
+            </div>
+
+            <!-- 현재 가격과 차트 조회 기간을 조작하는 도구 모음 -->
+            <div id="actual-price-controls" class="flex flex-wrap items-center gap-5 md:justify-end">
+              <div class="flex flex-col items-start md:items-end">
+                <div class="flex items-baseline gap-1.5">
+                  <span id="detail-price" class="text-3xl sm:text-4xl font-extrabold text-gray-900 tracking-tight font-numeric price-display"></span>
+                  <span class="text-sm font-bold text-gray-500">원</span>
+                </div>
+                <div id="detail-change-badge" class="inline-flex items-center gap-1 text-xs font-bold mt-1">
+                  <!-- Change rate filled by app.js -->
+                </div>
+              </div>
+
+              <!-- 1개월·3개월·6개월·전체 기간 버튼 -->
+              <div class="flex items-center gap-2.5 pt-2 md:pt-0 border-t md:border-t-0 md:border-l border-gray-100 md:pl-5 toolbar-group">
+                <div class="range-controls" role="group" aria-label="차트 표시 기간">
+                  <button data-range="21">1개월</button>
+                  <button data-range="63">3개월</button>
+                  <button data-range="126" aria-pressed="true">6개월</button>
+                  <button data-range="131">전체</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 핵심 지표 4개: 마지막 종가, 최고가, 최저가, 기간 수익률 -->
+        <div id="metrics" class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          <!-- Populated by app.js -->
+        </div>
+
+        <div class="stock-chart-layout">
+          <!-- 주가 차트: canvas에 app.js가 그래프를 그리고 마우스·터치 툴팁을 표시 -->
+          <div id="actual-chart" class="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm chart-card">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 id="chart-title" class="text-lg font-bold text-gray-900 tracking-tight chart-title">주가 흐름</h2>
+                <p id="chart-subtitle" class="text-xs text-gray-400 mt-1"></p>
+                <p id="chart-period" class="text-xs font-semibold text-indigo-600 mt-2"></p>
+              </div>
+
+              <div class="flex items-center gap-4 text-xs text-gray-500 flex-wrap chart-legend-bar">
+                <div class="range-controls" role="group" aria-label="차트 종류">
+                  <button type="button" data-chart-type="line" aria-pressed="false">선 차트</button>
+                  <button type="button" data-chart-type="candle" aria-pressed="true">캔들 차트</button>
+                </div>
+                <span class="flex items-center gap-1.5"><i class="w-3 h-0.5 bg-blue-600 rounded"></i> <span id="chart-legend-label">종가 · 예시 데이터</span></span>
+              </div>
+            </div>
+
+            <p id="prediction-status" role="status" style="font-size:13px;margin-bottom:16px;line-height:1.8"></p>
+            <!-- 차트와 가격 확인용 툴팁 영역 -->
+            <div class="chart-wrap relative">
+              <canvas id="price-chart" role="img" aria-label="주가 시계열 차트"></canvas>
+              <div id="chart-tooltip" class="chart-tooltip hidden" aria-hidden="true"></div>
+            </div>
+
+            <p id="chart-summary" class="chart-summary text-xs text-gray-400 mt-3 pt-3 border-t border-gray-100"></p>
+          </div>
+
+          <div id="forecast-card" class="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm chart-card" hidden>
+            <h2 id="forecast-title" class="text-lg font-bold chart-title">예측 종가</h2>
+            <p id="forecast-period" class="text-xs mt-2"></p>
+            <svg id="forecast-chart" width="100%" viewBox="0 0 640 240" role="img" aria-labelledby="forecast-title forecast-period"></svg>
+          </div>
+        </div>
+
+      </section>
+    </div>
+  </main>
+
+  <!-- 하단 영역: 서비스 이름과 데이터 사용 안내 문구 -->
+  <footer class="border-t border-gray-200 bg-white py-6 mt-12 app-footer">
+    <div class="max-w-[1680px] 2xl:max-w-[1760px] mx-auto px-6 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-gray-400">
+      <div class="flex items-center gap-3">
+        <span class="font-bold text-gray-700 footer-brand">STOCK ANALYST</span>
+        <span>•</span>
+        <span>전문 주식 데이터 분석 워크스페이스</span>
+      </div>
+      <div>
+        <span id="data-disclaimer">본 플랫폼의 분석 수치는 예시 데이터 기반이며, 최종 투자 판단의 책임은 투자자 본인에게 있습니다.</span>
+      </div>
+    </div>
+  </footer>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"80a1695c227345daa7822509274f3f60","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>
