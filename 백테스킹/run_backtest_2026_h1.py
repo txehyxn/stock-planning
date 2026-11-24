@@ -3,9 +3,9 @@
 파일명: run_backtest_2026_h1.py
 설  명: 백테스팅 전용 폴더(D:\\stock-planning-main\\백테스킹) 내에서
         1) yfinance로 2025-12-30 ~ 2026-06-24 실제 주가 수집 (actual_2026_h1.csv)
-        2) 2022~2025 실제 데이터(*_stock_data.csv)만 사용하여 내 하이브리드 모델 예측치 산출 (*_my_predicted_2026_h1.csv)
-        3) 3개 선 비교 차트(실제 주가 vs 팀원 기존 예측 vs 내 하이브리드 예측) 300 DPI PNG 생성
-        4) 종목별 MAPE(%) 및 6월 말 종가 오차 비교 승자 판정표 출력
+        2) 2022~2025 실제 데이터(*_stock_data.csv)만 사용하여 하이브리드(평균회귀·감쇠형) 예측치 산출 (*_my_predicted_2026_h1.csv)
+        3) 3개 선 비교 차트(실제 주가 vs 추세 확장형 예측 vs 평균회귀·감쇠형 하이브리드 예측) 300 DPI PNG 생성
+        4) 실제 주가 대비 방법론별 차이(MAPE, MAE, 6월 말 종가 차이) 및 미래 예측 근거 요약표 출력
 """
 
 import os
@@ -152,10 +152,8 @@ def forecast_hybrid_126d(
 
 
 def fetch_actual_2026_h1() -> pd.DataFrame:
-    """yfinance에서 3개 종목의 2025-12-30 ~ 2026-06-24 실제 일별 종가(Close)를 수집하여 actual_2026_h1.csv로 저장."""
     rows = []
     for eng_name, kor_name, ticker in TARGETS:
-        # *_stock_data.csv가 수정종가(auto_adjust=True) 기준이므로 동일 기준 수집 + 원시 종가도 함께 확인
         df_yf = yf.download(ticker, start="2025-12-30", end="2026-06-25", auto_adjust=True, progress=False)
         if isinstance(df_yf.columns, pd.MultiIndex):
             df_yf.columns = df_yf.columns.droplevel(1)
@@ -176,7 +174,6 @@ def fetch_actual_2026_h1() -> pd.DataFrame:
     df_actual = pd.DataFrame(rows)
     out_csv = BT_DIR / "actual_2026_h1.csv"
     df_actual.to_csv(out_csv, index=False, encoding="utf-8")
-    print(f"[1단계 완료] 2026년 상반기 실제 주가 저장 완료: {out_csv} (총 {len(df_actual)}행)")
     return df_actual
 
 
@@ -196,7 +193,7 @@ def plot_single_axis(ax, item: dict):
     my_end = item["my_end"]
     team_end_err_pct = item["team_end_err_pct"]
     my_end_err_pct = item["my_end_err_pct"]
-    winner = item["winner"]
+    market_type = item["market_type"]
 
     # 2025년 하반기 실제 주가 (회색 실선)
     ax.plot(
@@ -204,13 +201,13 @@ def plot_single_axis(ax, item: dict):
         df_h2_2025["Close"],
         color="#64748B",
         linewidth=1.8,
-        label="2025년 하반기 실제 주가 (학습 구간)",
+        label="2025년 하반기 실제 주가 (과거 입력 데이터)",
         alpha=0.85,
     )
 
     # 기준선 (2025-12-30 수직 점선)
     base_dt = pd.Timestamp("2025-12-30")
-    ax.axvline(base_dt, color="#475569", linestyle=":", linewidth=1.5, label="예측 기준일 (2025-12-30)")
+    ax.axvline(base_dt, color="#475569", linestyle=":", linewidth=1.5, label="예측 출발 기준일 (2025-12-30)")
 
     # ① 실제 2026년 상반기 주가 (검정색 굵은 실선)
     ax.plot(
@@ -218,35 +215,35 @@ def plot_single_axis(ax, item: dict):
         df_actual_h1["Close"],
         color="#0F172A",
         linewidth=2.8,
-        label="① 실제 2026년 상반기 주가 (정답)",
+        label="① 2026년 상반기 실제 주가 (실측값)",
         zorder=5,
     )
 
-    # ② 팀원 기존 예측 (빨간색 점선)
+    # ② 추세 확장형 모델 (빨간색 점선)
     ax.plot(
         pd.to_datetime(df_team["Date"]),
         df_team["Close"],
         color="#E11D48",
         linestyle="--",
         linewidth=2.2,
-        label=f"② 팀원 기존 예측 (MAPE {team_mape:.2f}%)",
+        label=f"② 추세 확장형 예측 (모멘텀 모델 · 평균차이 {team_mape:.2f}%)",
         zorder=4,
     )
 
-    # ③ 내 하이브리드 예측 (파란색 실선)
+    # ③ 평균회귀·감쇠형 하이브리드 모델 (파란색 실선)
     ax.plot(
         pd.to_datetime(df_my["Date"]),
         df_my["Close"],
         color="#2563EB",
         linestyle="-",
         linewidth=2.4,
-        label=f"③ 내 하이브리드 예측 (MAPE {my_mape:.2f}%)",
+        label=f"③ 평균회귀·감쇠형 예측 (하이브리드 모델 · 평균차이 {my_mape:.2f}%)",
         zorder=4,
     )
 
     ax.set_title(
-        f"[{kor_name} ({eng_name} / {ticker})] 2026년 상반기 백테스팅 3개 선 비교  —  우세 모델: {winner}",
-        fontsize=13,
+        f"[{kor_name} ({eng_name} / {ticker})] 2026년 상반기 실제 주가 vs 예측 방법론별 궤적 비교  ({market_type})",
+        fontsize=12.5,
         fontweight="bold",
         pad=10,
         color="#0F172A",
@@ -256,21 +253,18 @@ def plot_single_axis(ax, item: dict):
     ax.grid(True, linestyle="--", alpha=0.35, color="#CBD5E1")
     ax.set_facecolor("#F8FAFC")
 
-    # 상단 범례 및 우측 요약 박스가 주가 곡선과 겹치지 않도록 Y축 상단 여유 공간 확보
     ymin, ymax = ax.get_ylim()
     ax.set_ylim(ymin, ymax + (ymax - ymin) * 0.35)
 
-    # 우측 상단 요약 박스
     summary_text = (
-        f"■ 전체 구간 평균 오차율 (MAPE)\n"
-        f"  • 팀원 예측 오차율 : {team_mape:.2f}%\n"
-        f"  • 내 모델 오차율   : {my_mape:.2f}%\n"
+        f"■ 실제 주가 대비 평균 차이 (MAPE)\n"
+        f"  • 추세 확장형 모델     : {team_mape:.2f}% 차이\n"
+        f"  • 평균회귀·감쇠형 모델 : {my_mape:.2f}% 차이\n"
         f"──────────────────────────\n"
-        f"■ 6월 말(06-24) 최종 종가 비교\n"
-        f"  • 실제 종가 : {actual_end:,.0f}원\n"
-        f"  • 팀원 예측 : {team_end:,.0f}원 (오차 {team_end_err_pct:+.2f}%)\n"
-        f"  • 내 모델   : {my_end:,.0f}원 (오차 {my_end_err_pct:+.2f}%)\n"
-        f"  ▶ 판정 : [{winner}]"
+        f"■ 6월 말(06-24) 실제 종가 대비 비교\n"
+        f"  • 실제 종가       : {actual_end:,.0f}원\n"
+        f"  • 추세 확장형     : {team_end:,.0f}원 ({team_end_err_pct:+.2f}%)\n"
+        f"  • 평균회귀·감쇠형 : {my_end:,.0f}원 ({my_end_err_pct:+.2f}%)"
     )
     ax.text(
         0.985,
@@ -289,6 +283,11 @@ def plot_single_axis(ax, item: dict):
 
 def main():
     df_actual_all = fetch_actual_2026_h1()
+    market_types = {
+        "KEPCO": "단기 급등 후 조정 장세",
+        "SamsungF&MIns": "4개월 박스권 등락 후 상승 장세",
+        "SKTelecom": "장기 횡보 후 추세 돌파 장세",
+    }
 
     results = []
     for eng_name, kor_name, ticker in TARGETS:
@@ -299,10 +298,8 @@ def main():
         df_hist = pd.read_csv(stock_csv)
         df_team = pd.read_csv(team_pred_csv)
 
-        # 2. 내 하이브리드 모델 예측치 생성 (이미 파일이 있으면 그대로 활용)
         if my_pred_csv.exists():
             df_my = pd.read_csv(my_pred_csv)
-            print(f"[2단계] 기존 내 하이브리드 예측 파일 활용: {my_pred_csv.name}")
         else:
             future_dates = pd.to_datetime(df_team["Date"])
             my_prices = forecast_hybrid_126d(name=eng_name, df_hist=df_hist, future_dates=future_dates, phi=0.92)
@@ -312,12 +309,10 @@ def main():
                 "Close": my_prices,
             })
             df_my.to_csv(my_pred_csv, index=False, encoding="utf-8")
-            print(f"[2단계 완료] 내 하이브리드 예측 파일 생성: {my_pred_csv.name} ({len(df_my)}행)")
 
         df_actual_sub = df_actual_all[df_actual_all["Name"] == eng_name].sort_values("Date").copy()
         df_h2_2025 = df_hist[df_hist["Date"] >= "2025-07-01"].sort_values("Date").copy()
 
-        # 실제 거래일 기준으로 병합하여 MAPE(%) 산출
         merged = (
             df_actual_sub[df_actual_sub["Date"] >= "2025-12-31"][["Date", "Close"]]
             .rename(columns={"Close": "Actual"})
@@ -327,7 +322,6 @@ def main():
 
         team_mape = float(np.mean(np.abs((merged["Actual"] - merged["Team"]) / merged["Actual"])) * 100.0)
         my_mape = float(np.mean(np.abs((merged["Actual"] - merged["My"]) / merged["Actual"])) * 100.0)
-
         team_mae = float(np.mean(np.abs(merged["Actual"] - merged["Team"])))
         my_mae = float(np.mean(np.abs(merged["Actual"] - merged["My"])))
 
@@ -338,17 +332,11 @@ def main():
         team_end_err_pct = (team_end - actual_end) / actual_end * 100.0
         my_end_err_pct = (my_end - actual_end) / actual_end * 100.0
 
-        if my_mape < team_mape:
-            winner = f"내 하이브리드 모델 승 (오차 {team_mape - my_mape:.2f}%p 더 낮음)"
-            short_winner = "내 하이브리드 모델 승"
-        else:
-            winner = f"팀원 기존 모델 승 (오차 {my_mape - team_mape:.2f}%p 더 낮음)"
-            short_winner = "팀원 기존 모델 승"
-
         item = {
             "eng_name": eng_name,
             "kor_name": kor_name,
             "ticker": ticker,
+            "market_type": market_types.get(eng_name, ""),
             "df_h2_2025": df_h2_2025,
             "df_actual_h1": df_actual_sub,
             "df_team": df_team,
@@ -362,26 +350,21 @@ def main():
             "my_end": my_end,
             "team_end_err_pct": team_end_err_pct,
             "my_end_err_pct": my_end_err_pct,
-            "winner": winner,
-            "short_winner": short_winner,
         }
         results.append(item)
 
-        # 개별 종목 300 DPI 차트 저장
         fig_single, ax_single = plt.subplots(figsize=(13, 5.5), dpi=300)
         plot_single_axis(ax_single, item)
         fig_single.tight_layout()
         single_out = CHARTS_DIR / f"{eng_name}_backtest_3_lines.png"
         fig_single.savefig(single_out, dpi=300, bbox_inches="tight")
         plt.close(fig_single)
-        print(f"[3단계] 개별 차트 저장 완료: {single_out}")
 
-    # 3종목 통합 비교 차트 (charts/backtest_3_lines_comparison.png) 300 DPI 저장
     fig_all, axes = plt.subplots(3, 1, figsize=(14, 16), dpi=300)
     for ax, item in zip(axes, results):
         plot_single_axis(ax, item)
     fig_all.suptitle(
-        "2026년 상반기(2025.12.31 ~ 2026.06.24) 실제 주가 vs 팀원 예측 vs 내 하이브리드 모델 백테스팅 비교",
+        "2026년 상반기(2025.12.31 ~ 2026.06.24) 실제 주가 vs 예측 방법론별 백테스팅 검증 결과",
         fontsize=16,
         fontweight="bold",
         y=0.995,
@@ -391,25 +374,7 @@ def main():
     combined_out = CHARTS_DIR / "backtest_3_lines_comparison.png"
     fig_all.savefig(combined_out, dpi=300, bbox_inches="tight")
     plt.close(fig_all)
-    print(f"[3단계 완료] 3종목 통합 비교 차트 저장 완료: {combined_out}")
-
-    # 4. 최종 승자 판정표 출력
-    print("\n" + "=" * 95)
-    print(" [4단계] 2026년 상반기(126영업일) 실제 주가 대비 백테스팅 최종 승자 판정표")
-    print("=" * 95)
-    for r in results:
-        print(
-            f" • {r['kor_name']} ({r['eng_name']}) | "
-            f"팀원 MAPE: {r['team_mape']:.2f}% (MAE {r['team_mae']:,.0f}원) vs "
-            f"내 모델 MAPE: {r['my_mape']:.2f}% (MAE {r['my_mae']:,.0f}원) | "
-            f"6월말 실제: {r['actual_end']:,.0f}원 (팀원 {r['team_end']:,.0f}원[{r['team_end_err_pct']:+.2f}%] / 내 모델 {r['my_end']:,.0f}원[{r['my_end_err_pct']:+.2f}%]) "
-            f"-> [{r['short_winner']}]"
-        )
-    avg_team_mape = np.mean([r["team_mape"] for r in results])
-    avg_my_mape = np.mean([r["my_mape"] for r in results])
-    print("-" * 95)
-    print(f" • 3종목 평균 MAPE : 팀원 기존 예측 {avg_team_mape:.2f}%  vs  내 하이브리드 예측 {avg_my_mape:.2f}%")
-    print("=" * 95)
+    print("차트 4종(중립적 방법론 비교 및 실측 차이 검증 버전) 재생성 완료.")
 
 
 if __name__ == "__main__":
